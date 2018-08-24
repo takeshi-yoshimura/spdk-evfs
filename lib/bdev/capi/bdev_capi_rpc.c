@@ -83,7 +83,7 @@ spdk_rpc_construct_capi_bdev(struct spdk_jsonrpc_request *request,
 		uuid = &decoded_uuid;
 	}
 
-	bdev = create_capi_disk(req.name, uuid, req.num_blocks, req.block_size);
+	bdev = create_capi_bdev(req.name, uuid, req.num_blocks, req.block_size);
 	if (bdev == NULL) {
 		goto invalid;
 	}
@@ -157,7 +157,7 @@ spdk_rpc_delete_capi_bdev(struct spdk_jsonrpc_request *request,
 		goto invalid;
 	}
 
-	delete_capi_disk(bdev, _spdk_rpc_delete_capi_bdev_cb, request);
+    delete_bdev_capi(bdev, _spdk_rpc_delete_capi_bdev_cb, request);
 
 	free_rpc_delete_capi(&req);
 

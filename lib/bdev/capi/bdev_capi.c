@@ -43,6 +43,7 @@
 #include "spdk/thread.h"
 #include "spdk/queue.h"
 #include "spdk/string.h"
+#include "spdk/likely.h"
 
 #include "spdk/bdev_module.h"
 #include "spdk_internal/log.h"
@@ -51,281 +52,230 @@
 #include "capiflash/src/include/pbuf.h"
 
 
+#define BLK_SIZE (4 * 1024)
 #define MAX_SGDEVS 8
 
-struct capi_disk {
-	struct spdk_bdev		disk;
-	void				*capi_buf;
-	pbuf_t					*pbuf;
-	chunk_id_t              chunk_id;
-	size_t                  lba;
-	size_t   				last_lba;
-	uint32_t                queue_depth;
-	bool intrp_thds;
-	bool seq;
-	bool plun;
-	int vlunsize;
-	TAILQ_ENTRY(capi_disk)	link;
-};
-
-struct capi_task {
-	int				num_outstanding;
-	enum spdk_bdev_io_status	status;
-};
-
-static struct capi_task *
-__capi_task_from_copy_task(struct spdk_copy_task *ct)
-{
-	return (struct capi_task *)((uintptr_t)ct - sizeof(struct capi_task));
-}
-
-static struct spdk_copy_task *
-__copy_task_from_capi_task(struct capi_task *mt)
-{
-	return (struct spdk_copy_task *)((uintptr_t)mt + sizeof(struct capi_task));
-}
-
-static void
-capi_done(void *ref, int status)
-{
-	struct capi_task *task = __capi_task_from_copy_task(ref);
-
-	if (status != 0) {
-		if (status == -ENOMEM) {
-			task->status = SPDK_BDEV_IO_STATUS_NOMEM;
-		} else {
-			task->status = SPDK_BDEV_IO_STATUS_FAILED;
-		}
-	}
-
-	if (--task->num_outstanding == 0) {
-		spdk_bdev_io_complete(spdk_bdev_io_from_ctx(task), task->status);
-	}
-}
-
-static TAILQ_HEAD(, capi_disk) g_capi_disks = TAILQ_HEAD_INITIALIZER(g_capi_disks);
-
-int capi_disk_count = 0;
 
 static int bdev_capi_initialize(void);
 static void bdev_capi_get_spdk_running_config(FILE *fp);
-
-static int
-bdev_capi_get_ctx_size(void)
-{
-	return sizeof(struct capi_task) + spdk_copy_task_size();
-}
+static int bdev_capi_get_ctx_size(void);
 
 static struct spdk_bdev_module capi_if = {
-	.name = "capi",
-	.module_init = bdev_capi_initialize,
-	.config_text = bdev_capi_get_spdk_running_config,
-	.get_ctx_size = bdev_capi_get_ctx_size,
-
+		.name = "capi",
+		.module_init = bdev_capi_initialize,
+		.config_text = bdev_capi_get_spdk_running_config,
+		.get_ctx_size = bdev_capi_get_ctx_size,
 };
 
 SPDK_BDEV_MODULE_REGISTER(&capi_if)
 
+struct capi_bdev {
+	struct spdk_bdev disk;
+	chunk_id_t chunk_id;
+	size_t lba;
+	size_t last_lba;
+	uint32_t queue_depth;
+	bool intrp_thds;
+	bool seq;
+	bool plun;
+	int vlunsize;
+	bool unmap_supported;
+	TAILQ_ENTRY(capi_bdev) link;
+};
+
+static TAILQ_HEAD(, capi_bdev) g_capi_bdev_head = TAILQ_HEAD_INITIALIZER(g_capi_bdev_head);
+static int capi_bdev_count = 0;
+
+
+struct capi_io_channel {
+	struct spdk_poller	*poller;
+	int *tags;
+	TAILQ_HEAD(, spdk_bdev_io)	io; // TODO: enhancing bdev_io to have a tag
+};
+
 static void
-capi_disk_free(struct capi_disk *capi_disk)
+capi_disk_free(struct capi_bdev *capi_disk)
 {
 	if (!capi_disk) {
 		return;
 	}
 
 	free(capi_disk->disk.name);
-	pbuf_put(capi_disk->pbuf, capi_disk->capi_buf);
-	pbuf_free(capi_disk->pbuf);
+	spdk_dma_free(capi_disk);
 	cblk_term(NULL, 0);
 }
 
 static int
 bdev_capi_destruct(void *ctx)
 {
-	struct capi_disk *capi_disk = ctx;
+	struct capi_bdev *capi_disk = ctx;
 
-	TAILQ_REMOVE(&g_capi_disks, capi_disk, link);
+	TAILQ_REMOVE(&g_capi_bdev_head, capi_disk, link);
 	capi_disk_free(capi_disk);
 	return 0;
 }
 
 static int
-bdev_capi_check_iov_len(struct iovec *iovs, int iovcnt, size_t nbytes)
+bdev_capi_readv(struct capi_bdev *bdev, struct capi_io_channel *ch,
+		  struct iovec *iov, int iovcnt, uint64_t lba_count, uint64_t lba)
 {
-	int i;
+	int i, rc = 0;
+	uint64_t src_lba;
+	uint64_t remaining_count;
 
-	for (i = 0; i < iovcnt; i++) {
-		if (nbytes < iovs[i].iov_len) {
-			return 0;
-		}
-
-		nbytes -= iovs[i].iov_len;
+	src_lba = lba;
+	remaining_count = lba_count;
+	for (i = 0; i < iovcnt && 0 < remaining_count; i++) {
+		uint64_t nblocks = spdk_min(iov[i].iov_len / BLK_SIZE, remaining_count);
+		if (nblocks > 0) {
+            rc = cblk_aread(bdev->chunk_id, iov[i].iov_base, src_lba, nblocks, &ch->tag, 0, 0);
+            if (rc < 0) {
+                return errno;
+            }
+            src_lba += nblocks * BLK_SIZE;
+            remaining_count -= nblocks;
+        }
 	}
-
-	return nbytes != 0;
+	return 0;
 }
 
 static void
-bdev_capi_readv(struct capi_disk *mdisk, struct spdk_io_channel *ch,
-		  struct capi_task *task,
-		  struct iovec *iov, int iovcnt, size_t len, uint64_t offset)
+bdev_capi_get_buf_cb(struct spdk_io_channel *_ch, struct spdk_bdev_io *bdev_io)
 {
-	int64_t res = 0;
-	void *src = mdisk->capi_buf + offset;
-	int i;
+    struct capi_io_channel *ch = spdk_io_channel_get_ctx(_ch);
+    int ret;
 
-	if (bdev_capi_check_iov_len(iov, iovcnt, len)) {
-		spdk_bdev_io_complete(spdk_bdev_io_from_ctx(task),
-				      SPDK_BDEV_IO_STATUS_FAILED);
-		return;
-	}
+    ret = bdev_capi_readv((struct capi_bdev *)bdev_io->bdev->ctxt,
+                          ch,
+                          bdev_io->u.bdev.iovs,
+                          bdev_io->u.bdev.iovcnt,
+                          bdev_io->u.bdev.num_blocks,
+                          bdev_io->u.bdev.offset_blocks * bdev_io->bdev->blocklen);
 
-	SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "read %lu bytes from offset %#lx\n",
-		      len, offset);
-
-	task->status = SPDK_BDEV_IO_STATUS_SUCCESS;
-	task->num_outstanding = iovcnt;
-
-	for (i = 0; i < iovcnt; i++) {
-		res = spdk_copy_submit(__copy_task_from_capi_task(task),
-				       ch, iov[i].iov_base,
-				       src, iov[i].iov_len, capi_done);
-
-		if (res != 0) {
-			capi_done(__copy_task_from_capi_task(task), res);
-		}
-
-		src += iov[i].iov_len;
-		len -= iov[i].iov_len;
-	}
-}
-
-static void
-bdev_capi_writev(struct capi_disk *mdisk, struct spdk_io_channel *ch,
-		   struct capi_task *task,
-		   struct iovec *iov, int iovcnt, size_t len, uint64_t offset)
-{
-	int64_t res = 0;
-	void *dst = mdisk->capi_buf + offset;
-	int i;
-
-	if (bdev_capi_check_iov_len(iov, iovcnt, len)) {
-		spdk_bdev_io_complete(spdk_bdev_io_from_ctx(task),
-				      SPDK_BDEV_IO_STATUS_FAILED);
-		return;
-	}
-
-	SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "wrote %lu bytes to offset %#lx\n",
-		      len, offset);
-
-	task->status = SPDK_BDEV_IO_STATUS_SUCCESS;
-	task->num_outstanding = iovcnt;
-
-	for (i = 0; i < iovcnt; i++) {
-		res = spdk_copy_submit(__copy_task_from_capi_task(task),
-				       ch, dst, iov[i].iov_base,
-				       iov[i].iov_len, capi_done);
-
-		if (res != 0) {
-			capi_done(__copy_task_from_capi_task(task), res);
-		}
-
-		dst += iov[i].iov_len;
-	}
+    if (spdk_likely(ret == 0)) {
+        TAILQ_INSERT_TAIL(&ch->io, bdev_io, module_link);
+        return;
+    } else if (ret == -ENOMEM) {
+        spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_NOMEM);
+    } else {
+        spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
+    }
 }
 
 static int
-bdev_capi_unmap(struct capi_disk *mdisk,
-		  struct spdk_io_channel *ch,
-		  struct capi_task *task,
-		  uint64_t offset,
-		  uint64_t byte_count)
+bdev_capi_writev(struct capi_bdev *bdev, struct capi_io_channel *ch, struct spdk_bdev_io *bdev_io,
+		   struct iovec *iov, int iovcnt, uint64_t lba_count, uint64_t lba)
 {
-	task->status = SPDK_BDEV_IO_STATUS_SUCCESS;
-	task->num_outstanding = 1;
+    int i, rc, tag;
+    uint64_t dst_lba;
+    uint64_t remaining_count;
 
-	return spdk_copy_submit_fill(__copy_task_from_capi_task(task), ch,
-				     mdisk->capi_buf + offset, 0, byte_count, capi_done);
+    dst_lba = lba;
+    remaining_count = lba_count;
+    for (i = 0; i < iovcnt && 0 < remaining_count; i++) {
+        uint64_t nblocks = spdk_min(iov[i].iov_len / BLK_SIZE, remaining_count);
+        if (nblocks > 0) {
+            rc = cblk_awrite(bdev->chunk_id, iov[i].iov_base, dst_lba, nblocks, &ch->tag, 0, 0);
+            if (spdk_unlikely(rc < 0)) {
+                return errno;
+            }
+            dst_lba += nblocks * BLK_SIZE;
+            remaining_count -= nblocks;
+        }
+    }
+
+    TAILQ_INSERT_TAIL(&ch->io, bdev_io, module_link);
+    return 0;
 }
 
-static int64_t
-bdev_capi_flush(struct capi_disk *mdisk, struct capi_task *task,
-		  uint64_t offset, uint64_t nbytes)
+static void * g_zero_buffer; // allocated at bdev_capi_initialize
+
+static int
+bdev_capi_unmap(struct capi_bdev *bdev, struct capi_io_channel *ch, struct spdk_bdev_io *bdev_io,
+        uint64_t lba_count, uint64_t lba)
 {
-	spdk_bdev_io_complete(spdk_bdev_io_from_ctx(task), SPDK_BDEV_IO_STATUS_SUCCESS);
+    int tag;
+    int rc = cblk_aunmap(bdev->chunk_id, g_zero_buffer, lba, lba_count, &ch->tag, 0, 0);
+    if (rc == 0) {
+        TAILQ_INSERT_TAIL(&ch->io, bdev_io, module_link);
+        return 0;
+    }
+    return errno;
+}
+
+static int
+bdev_capi_reset(struct capi_bdev *mdisk)
+{
+    /* First, delete all NVMe I/O queue pairs. */
+    spdk_for_each_channel(nbdev->nvme_ctrlr->ctrlr,
+                          _bdev_nvme_reset_destroy_qpair,
+                          bio,
+                          _bdev_nvme_reset);
 
 	return 0;
 }
 
-static int
-bdev_capi_reset(struct capi_disk *mdisk, struct capi_task *task)
+static bool
+bdev_capi_io_type_supported(void *ctx, enum spdk_bdev_io_type io_type)
 {
-	spdk_bdev_io_complete(spdk_bdev_io_from_ctx(task), SPDK_BDEV_IO_STATUS_SUCCESS);
+    switch (io_type) {
+        case SPDK_BDEV_IO_TYPE_READ:
+        case SPDK_BDEV_IO_TYPE_WRITE:
+        case SPDK_BDEV_IO_TYPE_FLUSH:
+        case SPDK_BDEV_IO_TYPE_RESET:
+        case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
+            return true;
 
-	return 0;
+        case SPDK_BDEV_IO_TYPE_UNMAP:
+            return ((struct capi_bdev *) ctx)->unmap_supported;
+
+        default:
+            return false;
+    }
 }
 
-static int _bdev_capi_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
+static int _bdev_capi_submit_request(struct spdk_io_channel *_ch, struct spdk_bdev_io *bdev_io)
 {
+    struct capi_bdev * bdev = (struct capi_bdev *)bdev_io->bdev->ctxt;
+    struct capi_io_channel *ch = spdk_io_channel_get_ctx(_ch);
 	uint32_t block_size = bdev_io->bdev->blocklen;
 
 	switch (bdev_io->type) {
 	case SPDK_BDEV_IO_TYPE_READ:
-		if (bdev_io->u.bdev.iovs[0].iov_base == NULL) {
-			assert(bdev_io->u.bdev.iovcnt == 1);
-			bdev_io->u.bdev.iovs[0].iov_base =
-				((struct capi_disk *)bdev_io->bdev->ctxt)->capi_buf +
-				bdev_io->u.bdev.offset_blocks * block_size;
-			bdev_io->u.bdev.iovs[0].iov_len = bdev_io->u.bdev.num_blocks * block_size;
-			spdk_bdev_io_complete(spdk_bdev_io_from_ctx(bdev_io->driver_ctx),
-					      SPDK_BDEV_IO_STATUS_SUCCESS);
-			return 0;
-		}
-
-		bdev_capi_readv((struct capi_disk *)bdev_io->bdev->ctxt,
-				  ch,
-				  (struct capi_task *)bdev_io->driver_ctx,
-				  bdev_io->u.bdev.iovs,
-				  bdev_io->u.bdev.iovcnt,
-				  bdev_io->u.bdev.num_blocks * block_size,
-				  bdev_io->u.bdev.offset_blocks * block_size);
+        // handle a case where iov[0].iov_base == NULL
+        spdk_bdev_io_get_buf(bdev_io, bdev_capi_get_buf_cb, bdev_io->u.bdev.num_blocks * block_size);
 		return 0;
 
 	case SPDK_BDEV_IO_TYPE_WRITE:
-		bdev_capi_writev((struct capi_disk *)bdev_io->bdev->ctxt,
+		return bdev_capi_writev(bdev,
 				   ch,
-				   (struct capi_task *)bdev_io->driver_ctx,
+				   bdev_io,
 				   bdev_io->u.bdev.iovs,
 				   bdev_io->u.bdev.iovcnt,
 				   bdev_io->u.bdev.num_blocks * block_size,
 				   bdev_io->u.bdev.offset_blocks * block_size);
-		return 0;
 
-	case SPDK_BDEV_IO_TYPE_RESET:
-		return bdev_capi_reset((struct capi_disk *)bdev_io->bdev->ctxt,
-					 (struct capi_task *)bdev_io->driver_ctx);
+    case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
+        if (!bdev->unmap_supported) {
+            return bdev_capi_writev(bdev,
+                    ch,
+                    bdev_io,
+                    bdev_io->u.bdev.iovs,
+                    bdev_io->u.bdev.iovcnt,
+                    bdev_io->u.bdev.num_blocks * block_size,
+                    bdev_io->u.bdev.offset_blocks * block_size);
+        }
+        // fall through
+
+    case SPDK_BDEV_IO_TYPE_UNMAP:
+        return bdev_capi_unmap(bdev, ch, bdev_io, bdev_io->u.bdev.num_blocks * block_size,
+                                bdev_io->u.bdev.offset_blocks * block_size);
+
+    case SPDK_BDEV_IO_TYPE_RESET:
+		return bdev_capi_reset(bdev);
 
 	case SPDK_BDEV_IO_TYPE_FLUSH:
-		return bdev_capi_flush((struct capi_disk *)bdev_io->bdev->ctxt,
-					 (struct capi_task *)bdev_io->driver_ctx,
-					 bdev_io->u.bdev.offset_blocks * block_size,
-					 bdev_io->u.bdev.num_blocks * block_size);
-
-	case SPDK_BDEV_IO_TYPE_UNMAP:
-		return bdev_capi_unmap((struct capi_disk *)bdev_io->bdev->ctxt,
-					 ch,
-					 (struct capi_task *)bdev_io->driver_ctx,
-					 bdev_io->u.bdev.offset_blocks * block_size,
-					 bdev_io->u.bdev.num_blocks * block_size);
-
-	case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
-		/* bdev_capi_unmap is implemented with a call to mem_cpy_fill which zeroes out all of the requested bytes. */
-		return bdev_capi_unmap((struct capi_disk *)bdev_io->bdev->ctxt,
-					 ch,
-					 (struct capi_task *)bdev_io->driver_ctx,
-					 bdev_io->u.bdev.offset_blocks * block_size,
-					 bdev_io->u.bdev.num_blocks * block_size);
-
+        return 0;
 	default:
 		return -1;
 	}
@@ -334,32 +284,21 @@ static int _bdev_capi_submit_request(struct spdk_io_channel *ch, struct spdk_bde
 
 static void bdev_capi_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
 {
-	if (_bdev_capi_submit_request(ch, bdev_io) != 0) {
-		spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
-	}
-}
+	int rc = _bdev_capi_submit_request(ch, bdev_io);
 
-static bool
-bdev_capi_io_type_supported(void *ctx, enum spdk_bdev_io_type io_type)
-{
-	switch (io_type) {
-	case SPDK_BDEV_IO_TYPE_READ:
-	case SPDK_BDEV_IO_TYPE_WRITE:
-	case SPDK_BDEV_IO_TYPE_FLUSH:
-	case SPDK_BDEV_IO_TYPE_RESET:
-	case SPDK_BDEV_IO_TYPE_UNMAP:
-	case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
-		return true;
-
-	default:
-		return false;
-	}
+    if (spdk_unlikely(rc != 0)) {
+        if (rc == -ENOMEM) {
+            spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_NOMEM);
+        } else {
+            spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
+        }
+    }
 }
 
 static struct spdk_io_channel *
 bdev_capi_get_io_channel(void *ctx)
 {
-	return spdk_copy_engine_get_io_channel();
+	return spdk_get_io_channel(&g_capi_bdev_head);
 }
 
 static void
@@ -391,14 +330,73 @@ static const struct spdk_bdev_fn_table capi_fn_table = {
 	.write_config_json	= bdev_capi_write_json_config,
 };
 
-struct spdk_bdev *create_capi_disk(const char *devStr, uint32_t queue_depth,
-					bool intrp_thds, bool seq, bool plun, uint32_t vlunsize,
-				     uint64_t num_blocks)
+
+
+
+static int
+capi_io_poll(void *arg)
 {
-	struct capi_disk	*mdisk;
+	struct capi_io_channel *ch = arg;
+    TAILQ_HEAD(, spdk_bdev_io)	io;
+    struct spdk_bdev_io		*bdev_io;
+    int status, rc;
+
+	TAILQ_INIT(&io);
+	TAILQ_SWAP(&ch->io, &io, spdk_bdev_io, module_link);
+
+	if (TAILQ_EMPTY(&io)) {
+		return 0;
+	}
+
+    if (ch->tag == -1) {
+        return 0;
+    }
+
+	while (!TAILQ_EMPTY(&io)) {
+        struct capi_bdev * bdev;
+		bdev_io = TAILQ_FIRST(&io);
+        bdev = (struct capi_bdev *)bdev_io->bdev->ctxt;
+        if (bdev->intrp_thds) {
+            rc = cblk_aresult(bdev->chunk_id, &ch->tag, &status, CBLK_ARESULT_BLOCKING);
+        } else {
+            rc = cblk_aresult(bdev->chunk_id, &ch->tag, &status, 0);
+        }
+		// TODO: check result
+		TAILQ_REMOVE(&io, bdev_io, module_link);
+		spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_SUCCESS);
+	}
+
+	return 1;
+}
+
+static int
+capi_bdev_create_cb(void *io_device, void *ctx_buf)
+{
+	struct capi_io_channel *ch = ctx_buf;
+
+	TAILQ_INIT(&ch->io);
+	ch->poller = spdk_poller_register(capi_io_poll, ch, 0);
+	ch->tag = -1;
+
+	return 0;
+}
+
+static void
+capi_bdev_destroy_cb(void *io_device, void *ctx_buf)
+{
+	struct capi_io_channel *ch = ctx_buf;
+	spdk_poller_unregister(&ch->poller);
+}
+
+struct spdk_bdev *create_capi_bdev(const char *devStr, uint32_t queue_depth,
+								   bool intrp_thds, bool seq, bool plun, uint32_t vlunsize,
+								   uint64_t num_blocks)
+{
+	struct capi_bdev	*mdisk;
 	int			rc;
 	int flags = 0;
 	size_t lun_size;
+    chunk_attrs_t attrs;
 
 	if (num_blocks == 0) {
 		SPDK_ERRLOG("Disk must be more than 0 blocks\n");
@@ -415,9 +413,13 @@ struct spdk_bdev *create_capi_disk(const char *devStr, uint32_t queue_depth,
 	if (rc) {
 		SPDK_ERRLOG("cblk_init failed with rc = %d and errno = %d\n",
 				rc, errno);
-		spdk_dma_free(mdisk);
+        spdk_dma_free(mdisk);
 		return NULL;
 	}
+
+    spdk_mem_all_zero(&attrs, sizeof(attrs));
+    cblk_get_attrs(mdisk->chunk_id, &attrs, 0);
+    mdisk->unmap_supported = (attrs.flags1 & CFLSH_ATTR_UNMAP) != 0;
 
 	if (!plun)
 		flags  = CBLK_OPN_VIRT_LUN;
@@ -461,21 +463,14 @@ struct spdk_bdev *create_capi_disk(const char *devStr, uint32_t queue_depth,
 		mdisk->lba = lrand48() % mdisk->last_lba;
 	}
 
-	mdisk->pbuf = pbuf_new(queue_depth, num_blocks * 4 * 1024);
-	mdisk->capi_buf = pbuf_get(mdisk->pbuf);
-	if (!mdisk->capi_buf) {
-		SPDK_ERRLOG("capi_buf pbuf_get() failed\n");
-		goto free_disk;
-	}
-
-	mdisk->disk.name = spdk_sprintf_alloc("CAPI%d", capi_disk_count);
-	capi_disk_count++;
+	mdisk->disk.name = spdk_sprintf_alloc("CAPI%d", capi_bdev_count);
+	capi_bdev_count++;
 	if (!mdisk->disk.name) {
 		goto free_disk;
 	}
 	mdisk->disk.product_name = "CAPI Flash";
 	mdisk->disk.write_cache = 1;
-	mdisk->disk.blocklen = 4 * 1024;
+	mdisk->disk.blocklen = BLK_SIZE;
 	mdisk->disk.blockcnt = num_blocks;
 	spdk_uuid_generate(&mdisk->disk.uuid);
 	mdisk->disk.ctxt = mdisk;
@@ -492,7 +487,7 @@ struct spdk_bdev *create_capi_disk(const char *devStr, uint32_t queue_depth,
 		goto free_disk;
 	}
 
-	TAILQ_INSERT_TAIL(&g_capi_disks, mdisk, link);
+	TAILQ_INSERT_TAIL(&g_capi_bdev_head, mdisk, link);
 
 	return &mdisk->disk;
 
@@ -502,7 +497,7 @@ free_disk:
 }
 
 void
-delete_capi_disk(struct spdk_bdev *bdev, spdk_delete_capi_complete cb_fn, void *cb_arg)
+delete_bdev_capi(struct spdk_bdev *bdev, spdk_delete_capi_complete cb_fn, void *cb_arg)
 {
 	if (!bdev || bdev->module != &capi_if) {
 		cb_fn(cb_arg, -ENODEV);
@@ -514,7 +509,7 @@ delete_capi_disk(struct spdk_bdev *bdev, spdk_delete_capi_complete cb_fn, void *
 
 static int bdev_capi_initialize(void)
 {
-	struct spdk_conf_section *sp = spdk_conf_find_section(NULL, "CAPI");
+	struct spdk_conf_section *sp;
 	int i, rc = 0, devN = 0;
 	char *devStr, *pstr;
 	char devStrs[MAX_SGDEVS][64];
@@ -525,9 +520,19 @@ static int bdev_capi_initialize(void)
 	int vlunsize,
 	struct spdk_bdev *bdev;
 
+	sp = spdk_conf_find_section(NULL, "CAPI");
 	if (sp == NULL) {
-		return rc;
+		return 0;
 	}
+
+	g_zero_buffer = spdk_dma_zmalloc(BLK_SIZE, BLK_SIZE, NULL);
+	if (g_zero_buffer) {
+        SPDK_ERRLOG("spdk_dma_zmalloc() failed\n");
+        return -ENOMEM;
+	}
+
+	spdk_io_device_register(&g_capi_bdev_head, capi_bdev_create_cb, capi_bdev_destroy_cb,
+			sizeof(struct capi_io_channel));
 
 	devStr = spdk_conf_section_get_nmval(sp, "devStr", i, 1);
 
@@ -557,7 +562,7 @@ static int bdev_capi_initialize(void)
 	}
 
 	for (i = 0; i < devN; i++) {
-		bdev = create_capi_disk(devStr[i], queue_depth, intrp_thds, seq, plun, vlunsize, num_blocks);
+		bdev = create_capi_bdev(devStr[i], queue_depth, intrp_thds, seq, plun, vlunsize, num_blocks);
 		if (bdev == NULL) {
 			SPDK_ERRLOG("Could not create capi disk\n");
 			rc = EINVAL;
@@ -578,10 +583,10 @@ bdev_capi_get_spdk_running_config(FILE *fp)
 	bool seq = false;
 	bool plun = false;
 	int vlunsize = 0;
-	struct capi_disk *mdisk;
+	struct capi_bdev *mdisk;
 
 	/* count number of malloc LUNs, get LUN size */
-	TAILQ_FOREACH(mdisk, &g_capi_disks, link) {
+	TAILQ_FOREACH(mdisk, &g_capi_bdev_head, link) {
 		if (0 == num_capi_luns) {
 			/* assume all malloc luns the same size */
 			queue_depth = mdisk->queue_depth;
@@ -609,6 +614,12 @@ bdev_capi_get_spdk_running_config(FILE *fp)
 			"  vlunSizeInGB %d\n",
 			queue_depth, intrp_thds, seq, plun, vlunsize);
 	}
+}
+
+static int
+bdev_capi_get_ctx_size(void)
+{
+	return sizeof(struct capi_bdev);
 }
 
 SPDK_LOG_REGISTER_COMPONENT("bdev_capi", SPDK_LOG_BDEV_CAPI)
