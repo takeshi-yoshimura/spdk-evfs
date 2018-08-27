@@ -57,12 +57,14 @@
 
 
 static int bdev_capi_initialize(void);
+static void bdev_capi_finish(void);
 static void bdev_capi_get_spdk_running_config(FILE *fp);
 static int bdev_capi_get_ctx_size(void);
 
 static struct spdk_bdev_module capi_if = {
 		.name = "capi",
 		.module_init = bdev_capi_initialize,
+		.module_fini = bdev_capi_finish,
 		.config_text = bdev_capi_get_spdk_running_config,
 		.get_ctx_size = bdev_capi_get_ctx_size,
 };
@@ -71,14 +73,9 @@ SPDK_BDEV_MODULE_REGISTER(&capi_if)
 
 struct capi_bdev {
 	struct spdk_bdev disk;
+	char *devStr;
 	chunk_id_t chunk_id;
-	size_t lba;
-	size_t last_lba;
-	uint32_t queue_depth;
-	bool intrp_thds;
-	bool seq;
-	bool plun;
-	int vlunsize;
+	int queue_depth;
 	bool unmap_supported;
 	TAILQ_ENTRY(capi_bdev) link;
 };
@@ -87,39 +84,29 @@ static TAILQ_HEAD(, capi_bdev) g_capi_bdev_head = TAILQ_HEAD_INITIALIZER(g_capi_
 static int capi_bdev_count = 0;
 
 
-struct capi_io_channel {
-	struct spdk_poller	*poller;
-	int *tags;
-	TAILQ_HEAD(, spdk_bdev_io)	io; // TODO: enhancing bdev_io to have a tag
+struct capi_bdev_io {
+    int tag;
 };
 
-static void
-capi_disk_free(struct capi_bdev *capi_disk)
+struct capi_io_channel {
+	struct spdk_poller *poller;
+	TAILQ_HEAD(, spdk_bdev_io) io;
+};
+
+static int bdev_capi_destruct(void *ctx)
 {
-	if (!capi_disk) {
-		return;
-	}
+	struct capi_bdev *bdev = ctx;
 
-	free(capi_disk->disk.name);
-	spdk_dma_free(capi_disk);
-	cblk_term(NULL, 0);
-}
-
-static int
-bdev_capi_destruct(void *ctx)
-{
-	struct capi_bdev *capi_disk = ctx;
-
-	TAILQ_REMOVE(&g_capi_bdev_head, capi_disk, link);
-	capi_disk_free(capi_disk);
+	TAILQ_REMOVE(&g_capi_bdev_head, bdev, link);
+	free(bdev->disk.name);
+	spdk_dma_free(bdev);
 	return 0;
 }
 
-static int
-bdev_capi_readv(struct capi_bdev *bdev, struct capi_io_channel *ch,
+static int bdev_capi_readv(struct capi_bdev *bdev, struct capi_bdev_io *bio,
 		  struct iovec *iov, int iovcnt, uint64_t lba_count, uint64_t lba)
 {
-	int i, rc = 0;
+	int i, rc;
 	uint64_t src_lba;
 	uint64_t remaining_count;
 
@@ -128,7 +115,7 @@ bdev_capi_readv(struct capi_bdev *bdev, struct capi_io_channel *ch,
 	for (i = 0; i < iovcnt && 0 < remaining_count; i++) {
 		uint64_t nblocks = spdk_min(iov[i].iov_len / BLK_SIZE, remaining_count);
 		if (nblocks > 0) {
-            rc = cblk_aread(bdev->chunk_id, iov[i].iov_base, src_lba, nblocks, &ch->tag, 0, 0);
+            rc = cblk_aread(bdev->chunk_id, iov[i].iov_base, src_lba, nblocks, &bio->tag, 0, 0);
             if (rc < 0) {
                 return errno;
             }
@@ -139,14 +126,14 @@ bdev_capi_readv(struct capi_bdev *bdev, struct capi_io_channel *ch,
 	return 0;
 }
 
-static void
-bdev_capi_get_buf_cb(struct spdk_io_channel *_ch, struct spdk_bdev_io *bdev_io)
+static void bdev_capi_get_buf_cb(struct spdk_io_channel *_ch, struct spdk_bdev_io *bdev_io)
 {
     struct capi_io_channel *ch = spdk_io_channel_get_ctx(_ch);
+    struct capi_bdev_io *bio = (struct capi_bdev_io *)bdev_io->driver_ctx;
     int ret;
 
     ret = bdev_capi_readv((struct capi_bdev *)bdev_io->bdev->ctxt,
-                          ch,
+                          bio,
                           bdev_io->u.bdev.iovs,
                           bdev_io->u.bdev.iovcnt,
                           bdev_io->u.bdev.num_blocks,
@@ -162,11 +149,11 @@ bdev_capi_get_buf_cb(struct spdk_io_channel *_ch, struct spdk_bdev_io *bdev_io)
     }
 }
 
-static int
-bdev_capi_writev(struct capi_bdev *bdev, struct capi_io_channel *ch, struct spdk_bdev_io *bdev_io,
+static int bdev_capi_writev(struct capi_bdev *bdev, struct capi_io_channel *ch, struct spdk_bdev_io *bdev_io,
+		   struct capi_bdev_io *bio,
 		   struct iovec *iov, int iovcnt, uint64_t lba_count, uint64_t lba)
 {
-    int i, rc, tag;
+    int i, rc;
     uint64_t dst_lba;
     uint64_t remaining_count;
 
@@ -175,7 +162,7 @@ bdev_capi_writev(struct capi_bdev *bdev, struct capi_io_channel *ch, struct spdk
     for (i = 0; i < iovcnt && 0 < remaining_count; i++) {
         uint64_t nblocks = spdk_min(iov[i].iov_len / BLK_SIZE, remaining_count);
         if (nblocks > 0) {
-            rc = cblk_awrite(bdev->chunk_id, iov[i].iov_base, dst_lba, nblocks, &ch->tag, 0, 0);
+            rc = cblk_awrite(bdev->chunk_id, iov[i].iov_base, dst_lba, nblocks, &bio->tag, 0, 0);
             if (spdk_unlikely(rc < 0)) {
                 return errno;
             }
@@ -190,12 +177,11 @@ bdev_capi_writev(struct capi_bdev *bdev, struct capi_io_channel *ch, struct spdk
 
 static void * g_zero_buffer; // allocated at bdev_capi_initialize
 
-static int
-bdev_capi_unmap(struct capi_bdev *bdev, struct capi_io_channel *ch, struct spdk_bdev_io *bdev_io,
+static int bdev_capi_unmap(struct capi_bdev *bdev, struct capi_io_channel *ch, struct spdk_bdev_io *bdev_io,
+        struct capi_bdev_io *bio,
         uint64_t lba_count, uint64_t lba)
 {
-    int tag;
-    int rc = cblk_aunmap(bdev->chunk_id, g_zero_buffer, lba, lba_count, &ch->tag, 0, 0);
+    int rc = cblk_aunmap(bdev->chunk_id, g_zero_buffer, lba, lba_count, &bio->tag, 0, 0);
     if (rc == 0) {
         TAILQ_INSERT_TAIL(&ch->io, bdev_io, module_link);
         return 0;
@@ -203,26 +189,12 @@ bdev_capi_unmap(struct capi_bdev *bdev, struct capi_io_channel *ch, struct spdk_
     return errno;
 }
 
-static int
-bdev_capi_reset(struct capi_bdev *mdisk)
-{
-    /* First, delete all NVMe I/O queue pairs. */
-    spdk_for_each_channel(nbdev->nvme_ctrlr->ctrlr,
-                          _bdev_nvme_reset_destroy_qpair,
-                          bio,
-                          _bdev_nvme_reset);
-
-	return 0;
-}
-
-static bool
-bdev_capi_io_type_supported(void *ctx, enum spdk_bdev_io_type io_type)
+static bool bdev_capi_io_type_supported(void *ctx, enum spdk_bdev_io_type io_type)
 {
     switch (io_type) {
         case SPDK_BDEV_IO_TYPE_READ:
         case SPDK_BDEV_IO_TYPE_WRITE:
         case SPDK_BDEV_IO_TYPE_FLUSH:
-        case SPDK_BDEV_IO_TYPE_RESET:
         case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
             return true;
 
@@ -237,6 +209,7 @@ bdev_capi_io_type_supported(void *ctx, enum spdk_bdev_io_type io_type)
 static int _bdev_capi_submit_request(struct spdk_io_channel *_ch, struct spdk_bdev_io *bdev_io)
 {
     struct capi_bdev * bdev = (struct capi_bdev *)bdev_io->bdev->ctxt;
+    struct capi_bdev_io * bio = (struct capi_bdev_io *)bdev_io->driver_ctx;
     struct capi_io_channel *ch = spdk_io_channel_get_ctx(_ch);
 	uint32_t block_size = bdev_io->bdev->blocklen;
 
@@ -250,6 +223,7 @@ static int _bdev_capi_submit_request(struct spdk_io_channel *_ch, struct spdk_bd
 		return bdev_capi_writev(bdev,
 				   ch,
 				   bdev_io,
+				   bio,
 				   bdev_io->u.bdev.iovs,
 				   bdev_io->u.bdev.iovcnt,
 				   bdev_io->u.bdev.num_blocks * block_size,
@@ -260,6 +234,7 @@ static int _bdev_capi_submit_request(struct spdk_io_channel *_ch, struct spdk_bd
             return bdev_capi_writev(bdev,
                     ch,
                     bdev_io,
+                    bio,
                     bdev_io->u.bdev.iovs,
                     bdev_io->u.bdev.iovcnt,
                     bdev_io->u.bdev.num_blocks * block_size,
@@ -268,18 +243,14 @@ static int _bdev_capi_submit_request(struct spdk_io_channel *_ch, struct spdk_bd
         // fall through
 
     case SPDK_BDEV_IO_TYPE_UNMAP:
-        return bdev_capi_unmap(bdev, ch, bdev_io, bdev_io->u.bdev.num_blocks * block_size,
+        return bdev_capi_unmap(bdev, ch, bdev_io, bio, bdev_io->u.bdev.num_blocks * block_size,
                                 bdev_io->u.bdev.offset_blocks * block_size);
-
-    case SPDK_BDEV_IO_TYPE_RESET:
-		return bdev_capi_reset(bdev);
 
 	case SPDK_BDEV_IO_TYPE_FLUSH:
         return 0;
 	default:
 		return -1;
 	}
-	return 0;
 }
 
 static void bdev_capi_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
@@ -295,15 +266,14 @@ static void bdev_capi_submit_request(struct spdk_io_channel *ch, struct spdk_bde
     }
 }
 
-static struct spdk_io_channel *
-bdev_capi_get_io_channel(void *ctx)
+static struct spdk_io_channel * bdev_capi_get_io_channel(void *ctx)
 {
 	return spdk_get_io_channel(&g_capi_bdev_head);
 }
 
-static void
-bdev_capi_write_json_config(struct spdk_bdev *bdev, struct spdk_json_write_ctx *w)
+static void bdev_capi_write_json_config(struct spdk_bdev *bdev, struct spdk_json_write_ctx *w)
 {
+	struct capi_bdev * capi_bdev = (struct capi_bdev *)bdev->ctxt;
 	char uuid_str[SPDK_UUID_STRING_LEN];
 
 	spdk_json_write_object_begin(w);
@@ -312,8 +282,8 @@ bdev_capi_write_json_config(struct spdk_bdev *bdev, struct spdk_json_write_ctx *
 
 	spdk_json_write_named_object_begin(w, "params");
 	spdk_json_write_named_string(w, "name", bdev->name);
-	spdk_json_write_named_uint64(w, "num_blocks", bdev->blockcnt);
-	spdk_json_write_named_uint32(w, "block_size", bdev->blocklen);
+	spdk_json_write_named_string(w, "devStr", capi_bdev->devStr);
+	spdk_json_write_named_int32(w, "queueDepth", capi_bdev->queue_depth);
 	spdk_uuid_fmt_lower(uuid_str, sizeof(uuid_str), &bdev->uuid);
 	spdk_json_write_named_string(w, "uuid", uuid_str);
 
@@ -333,171 +303,123 @@ static const struct spdk_bdev_fn_table capi_fn_table = {
 
 
 
-static int
-capi_io_poll(void *arg)
+static int capi_io_poll(void *arg)
 {
 	struct capi_io_channel *ch = arg;
-    TAILQ_HEAD(, spdk_bdev_io)	io;
-    struct spdk_bdev_io		*bdev_io;
-    int status, rc;
+	TAILQ_HEAD(, spdk_bdev_io) io;
+    int rc, c = 0;
+    uint64_t status;
+	struct spdk_bdev_io *bdev_io;
 
 	TAILQ_INIT(&io);
 	TAILQ_SWAP(&ch->io, &io, spdk_bdev_io, module_link);
 
-	if (TAILQ_EMPTY(&io)) {
-		return 0;
+	TAILQ_FOREACH(bdev_io, &io, module_link) {
+		struct capi_bdev * bdev = (struct capi_bdev *)bdev_io->bdev->ctxt;
+		struct capi_bdev_io *bio = (struct capi_bdev_io *)bdev_io->driver_ctx;
+
+		rc = cblk_aresult(bdev->chunk_id, &bio->tag, &status, 0);
+		if (rc > 0) {
+			c++;
+			spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_SUCCESS);
+		} else if (rc < 0) {
+			spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
+		} else {
+			TAILQ_INSERT_HEAD(&ch->io, bdev_io, module_link);
+		}
 	}
 
-    if (ch->tag == -1) {
-        return 0;
-    }
-
-	while (!TAILQ_EMPTY(&io)) {
-        struct capi_bdev * bdev;
-		bdev_io = TAILQ_FIRST(&io);
-        bdev = (struct capi_bdev *)bdev_io->bdev->ctxt;
-        if (bdev->intrp_thds) {
-            rc = cblk_aresult(bdev->chunk_id, &ch->tag, &status, CBLK_ARESULT_BLOCKING);
-        } else {
-            rc = cblk_aresult(bdev->chunk_id, &ch->tag, &status, 0);
-        }
-		// TODO: check result
-		TAILQ_REMOVE(&io, bdev_io, module_link);
-		spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_SUCCESS);
-	}
-
-	return 1;
+	return c;
 }
 
-static int
-capi_bdev_create_cb(void *io_device, void *ctx_buf)
+static int capi_bdev_create_cb(void *io_device, void *ctx_buf)
 {
 	struct capi_io_channel *ch = ctx_buf;
 
 	TAILQ_INIT(&ch->io);
 	ch->poller = spdk_poller_register(capi_io_poll, ch, 0);
-	ch->tag = -1;
 
 	return 0;
 }
 
-static void
-capi_bdev_destroy_cb(void *io_device, void *ctx_buf)
+static void capi_bdev_destroy_cb(void *io_device, void *ctx_buf)
 {
 	struct capi_io_channel *ch = ctx_buf;
 	spdk_poller_unregister(&ch->poller);
 }
 
-struct spdk_bdev *create_capi_bdev(const char *devStr, uint32_t queue_depth,
-								   bool intrp_thds, bool seq, bool plun, uint32_t vlunsize,
-								   uint64_t num_blocks)
+struct spdk_bdev *create_capi_bdev(char * devStr, int queue_depth)
 {
-	struct capi_bdev	*mdisk;
-	int			rc;
-	int flags = 0;
-	size_t lun_size;
+	struct capi_bdev *bdev;
+	int rc;
     chunk_attrs_t attrs;
+    size_t lun_size;
 
-	if (num_blocks == 0) {
-		SPDK_ERRLOG("Disk must be more than 0 blocks\n");
+    if (queue_depth < 1) {
+    	SPDK_ERRLOG("queue_depth must be > 0");
+    	return NULL;
+    }
+
+	bdev = spdk_dma_zmalloc(sizeof(*bdev), 0, NULL);
+	if (!bdev) {
+		SPDK_ERRLOG("bdev spdk_dma_zmalloc() failed\n");
 		return NULL;
 	}
 
-	mdisk = spdk_dma_zmalloc(sizeof(*mdisk), 0, NULL);
-	if (!mdisk) {
-		SPDK_ERRLOG("mdisk spdk_dma_zmalloc() failed\n");
-		return NULL;
-	}
-
-	rc = cblk_init(NULL, 0);
-	if (rc) {
-		SPDK_ERRLOG("cblk_init failed with rc = %d and errno = %d\n",
-				rc, errno);
-        spdk_dma_free(mdisk);
-		return NULL;
+	bdev->chunk_id = cblk_open(devStr, queue_depth, O_RDWR, 0, CBLK_OPN_NO_INTRP_THREADS);
+	if (bdev->chunk_id == NULL_CHUNK_ID) {
+		SPDK_ERRLOG("cblk_open: errno:%d\n", errno);
+		goto free_bdev;
 	}
 
     spdk_mem_all_zero(&attrs, sizeof(attrs));
-    cblk_get_attrs(mdisk->chunk_id, &attrs, 0);
-    mdisk->unmap_supported = (attrs.flags1 & CFLSH_ATTR_UNMAP) != 0;
+    cblk_get_attrs(bdev->chunk_id, &attrs, 0);
+    bdev->unmap_supported = (attrs.flags1 & CFLSH_ATTR_UNMAP) != 0;
 
-	if (!plun)
-		flags  = CBLK_OPN_VIRT_LUN;
-	if (!intrp_thds)
-		flags |= CBLK_OPN_NO_INTRP_THREADS;
-
-	mdisk->chunk_id = cblk_open(devStr, queue_depth, O_RDWR, 0, flags);
-
-	if (mdisk->chunk_id == NULL_CHUNK_ID) {
-		SPDK_ERRLOG("cblk_open: errno:%d\n", errno);
-		goto free_disk;
-	}
-
-	rc = cblk_get_lun_size(mdisk->chunk_id, &lun_size, 0);
-	if (rc) {
+	rc = cblk_get_lun_size(bdev->chunk_id, &lun_size, 0);
+	if (rc < 0) {
 		SPDK_ERRLOG("cblk_get_lun_size failed: errno: %d\n", errno);
-		goto free_disk;
+		goto close_cblk;
 	}
 
-	if (plun) {
-		mdisk->last_lba = lun_size - 1;
-	} else {
-		mdisk->last_lba = vlunsize > lun_size ? lun_size - 1 : vlunsize - 1;
-		rc = cblk_set_size(mdisk->chunk_id, mdisk->last_lba + 1, 0);
-		if (rc) {
-			SPDK_ERRLOG("cblk_set_size failed, errno: %d\n", errno);
-			goto free_disk;
-		}
+	bdev->disk.name = spdk_sprintf_alloc("CAPI%d", capi_bdev_count++);
+	if (!bdev->disk.name) {
+		goto close_cblk;
 	}
 
-	SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "open: %s dev:%p id:%d nblks:%ld\n",
-		  devStrs[i],dev, dev->id, dev->last_lba+1);
+	bdev->devStr = devStr;
+	bdev->disk.product_name = "CAPI Flash";
+	bdev->disk.write_cache = 0;
+	bdev->disk.blocklen = BLK_SIZE;
+	bdev->disk.blockcnt = lun_size / BLK_SIZE;
+	spdk_uuid_generate(&bdev->disk.uuid);
+	bdev->disk.ctxt = bdev;
+	bdev->disk.fn_table = &capi_fn_table;
+	bdev->disk.module = &capi_if;
+	bdev->queue_depth = queue_depth;
 
-	// bump lba, reset lba if it wraps
-	if (seq) {
-        mdisk->lba += num_blocks;
-        if (mdisk->lba + num_blocks >= mdisk->last_lba) {
-        	mdisk->lba = 0;
-        }
-    } else {
-		mdisk->lba = lrand48() % mdisk->last_lba;
-	}
-
-	mdisk->disk.name = spdk_sprintf_alloc("CAPI%d", capi_bdev_count);
-	capi_bdev_count++;
-	if (!mdisk->disk.name) {
-		goto free_disk;
-	}
-	mdisk->disk.product_name = "CAPI Flash";
-	mdisk->disk.write_cache = 1;
-	mdisk->disk.blocklen = BLK_SIZE;
-	mdisk->disk.blockcnt = num_blocks;
-	spdk_uuid_generate(&mdisk->disk.uuid);
-	mdisk->disk.ctxt = mdisk;
-	mdisk->disk.fn_table = &capi_fn_table;
-	mdisk->disk.module = &capi_if;
-	mdisk->queue_depth = queue_depth;
-	mdisk->intrp_thds = intrp_thds;
-	mdisk->seq = seq;
-	mdisk->plun = plun;
-	mdisk->vlunsize = vlunsize;
-
-	rc = spdk_bdev_register(&mdisk->disk);
+	rc = spdk_bdev_register(&bdev->disk);
 	if (rc) {
-		goto free_disk;
+		goto free_disk_name;
 	}
 
-	TAILQ_INSERT_TAIL(&g_capi_bdev_head, mdisk, link);
+	TAILQ_INSERT_TAIL(&g_capi_bdev_head, bdev, link);
 
-	return &mdisk->disk;
+	SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "open: %s queue_depth: %d chunk_id:%d lun_size:%ld map: %d\n",
+				  devStr, queue_depth, bdev->chunk_id, lun_size, bdev->unmap_supported);
 
-free_disk:
-	capi_disk_free(mdisk);
+	return &bdev->disk;
+
+free_disk_name:
+	free(bdev->disk.name);
+close_cblk:
+	cblk_close(bdev->chunk_id, 0);
+free_bdev:
+	spdk_dma_free(bdev);
 	return NULL;
 }
 
-void
-delete_bdev_capi(struct spdk_bdev *bdev, spdk_delete_capi_complete cb_fn, void *cb_arg)
+void delete_bdev_capi(struct spdk_bdev *bdev, spdk_delete_capi_complete cb_fn, void *cb_arg)
 {
 	if (!bdev || bdev->module != &capi_if) {
 		cb_fn(cb_arg, -ENODEV);
@@ -510,15 +432,7 @@ delete_bdev_capi(struct spdk_bdev *bdev, spdk_delete_capi_complete cb_fn, void *
 static int bdev_capi_initialize(void)
 {
 	struct spdk_conf_section *sp;
-	int i, rc = 0, devN = 0;
-	char *devStr, *pstr;
-	char devStrs[MAX_SGDEVS][64];
-	int queue_depth;
-	bool intrp_thds;
-	bool seq;
-	bool plun;
-	int vlunsize,
-	struct spdk_bdev *bdev;
+	int i, rc = 0;
 
 	sp = spdk_conf_find_section(NULL, "CAPI");
 	if (sp == NULL) {
@@ -531,95 +445,78 @@ static int bdev_capi_initialize(void)
         return -ENOMEM;
 	}
 
+	rc = cblk_init(NULL, 0);
+	if (rc) {
+		SPDK_ERRLOG("cblk_init failed with rc = %d and errno = %d\n",
+					rc, errno);
+		goto free_buffer;
+	}
+
 	spdk_io_device_register(&g_capi_bdev_head, capi_bdev_create_cb, capi_bdev_destroy_cb,
 			sizeof(struct capi_io_channel));
 
-	devStr = spdk_conf_section_get_nmval(sp, "devStr", i, 1);
+	i = 0;
+	while (true) {
+		char * devStr, * qdStr;
+		int queue_depth;
+		struct spdk_bdev *bdev;
 
-	while (( pstr = strsep(&devStr, ":"))) {
-		if (devN == MAX_SGDEVS) {
+		devStr = spdk_conf_section_get_nmval(sp, "devConf", i, 0);
+		if (devStr == NULL) {
+			break;
+		}
+		qdStr = spdk_conf_section_get_nmval(sp, "devConf", i, 1);
+		queue_depth = (int)strtol(qdStr, NULL, 10);
+		SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "devStr=%s, queueDepth=%d\n", devStr, queue_depth);
+
+		bdev = create_capi_bdev(devStr, queue_depth);
+		if (bdev == NULL) {
+			SPDK_ERRLOG("Could not create capi disk for %s, queue_depth=%d\n", devStr, queue_depth);
+			rc = -EINVAL;
+			goto term_cblk;
+		}
+		if (++i >= MAX_SGDEVS) {
 			SPDK_ERRLOG("too many devs\n");
 			break;
 		}
-		SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "%s\n", pstr);
-		sprintf(devStrs[devN++], "%s", pstr);
 	}
-	queue_depth = spdk_conf_section_get_intval(sp, "queueDepth");
-	intrp_thds = spdk_conf_section_get_boolval(sp, "interruptMode", false);
-	seq = spdk_conf_section_get_boolval(sp, "sequentialLunAlloc", false);
-	plun = spdk_conf_section_get_boolval(sp, "physicalLunMode", false);
-	vlunsize = spdk_conf_section_get_intval(sp, "vlunSizeInGB");
-	if (queue_depth < 1) {
-		queue_depth = 100;
-	}
-	if (plun) {
-		vlunsize = -1;
-	} else {
-		if (vlunsize < 0) {
-			vlunsize = 1;
-		}
-		vlunsize *= 256 * 1024;
-	}
+	return 0;
 
-	for (i = 0; i < devN; i++) {
-		bdev = create_capi_bdev(devStr[i], queue_depth, intrp_thds, seq, plun, vlunsize, num_blocks);
-		if (bdev == NULL) {
-			SPDK_ERRLOG("Could not create capi disk\n");
-			rc = EINVAL;
-			goto end;
-		}
-	}
-
-end:
+term_cblk:
+	cblk_term(NULL, 0);
+free_buffer:
+	spdk_dma_free(g_zero_buffer);
 	return rc;
 }
 
-static void
-bdev_capi_get_spdk_running_config(FILE *fp)
+static void _bdev_capi_finish_cb(void *arg)
 {
-	int num_capi_luns = 0;
-	int queue_depth = 0;
-	bool intrp_thds = false;
-	bool seq = false;
-	bool plun = false;
-	int vlunsize = 0;
-	struct capi_bdev *mdisk;
+	spdk_dma_free(g_zero_buffer);
+	cblk_term(NULL, 0);
+	spdk_bdev_module_finish_done();
+}
 
-	/* count number of malloc LUNs, get LUN size */
-	TAILQ_FOREACH(mdisk, &g_capi_bdev_head, link) {
-		if (0 == num_capi_luns) {
-			/* assume all malloc luns the same size */
-			queue_depth = mdisk->queue_depth;
-			intrp_thds = mdisk->intrp_thds;
-			seq = mdisk->seq;
-			plun = mdisk->plun;
-			vlunsize = mdisk->vlunsize / 256 / 1024;
+static void bdev_capi_finish(void)
+{
+	spdk_io_device_unregister(&g_capi_bdev_head, _bdev_capi_finish_cb);
+}
+
+static void bdev_capi_get_spdk_running_config(FILE *fp)
+{
+	struct capi_bdev *bdev;
+	int idx = 0;
+
+	TAILQ_FOREACH(bdev, &g_capi_bdev_head, link) {
+		if (idx++ == 0) {
+			fprintf(fp, "\n[CAPI]\n");
 		}
-		num_capi_luns++;
-	}
-
-	if (num_capi_luns > 0) {
-		fprintf(fp,
-			"\n"
-			"# Users may change this section to create a different number or size of\n"
-			"# malloc LUNs.\n"
-			"# This will generate %d LUNs with a malloc-allocated backend. Each LUN\n"
-			"# will be %" PRIu64 "MB in size and these will be named CAPI0 through CAPI%d.\n"
-			"# Not all LUNs defined here are necessarily used below.\n"
-			"[CAPI]\n"
-			"  queueDepth %d\n"
-			"  interruptMode %d\n"
-			"  sequentialLunAlloc %d\n"
-			"  physicalLunMode %d\n"
-			"  vlunSizeInGB %d\n",
-			queue_depth, intrp_thds, seq, plun, vlunsize);
+		fprintf(fp, "  devConf %s %d\n", bdev->devStr, bdev->queue_depth);
 	}
 }
 
-static int
-bdev_capi_get_ctx_size(void)
+static int bdev_capi_get_ctx_size(void)
 {
-	return sizeof(struct capi_bdev);
+	return sizeof(struct capi_bdev_io);
 }
 
 SPDK_LOG_REGISTER_COMPONENT("bdev_capi", SPDK_LOG_BDEV_CAPI)
