@@ -476,7 +476,7 @@ static int bdev_capi_initialize(void)
 		queue_depth = (int)strtol(qdStr, NULL, 10);
 		SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "devStr=%s, queueDepth=%d\n", devStr, queue_depth);
 
-		bdev = create_capi_bdev(devStr, queue_depth);
+		bdev = create_capi_bdev(NULL, NULL, devStr, queue_depth);
 		if (bdev == NULL) {
 			SPDK_ERRLOG("Could not create capi disk for %s, queue_depth=%d\n", devStr, queue_depth);
 			rc = -EINVAL;
