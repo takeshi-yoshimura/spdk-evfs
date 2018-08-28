@@ -34,6 +34,10 @@
 SPDK_ROOT_DIR := $(abspath $(CURDIR)/../../..)
 include $(SPDK_ROOT_DIR)/mk/spdk.common.mk
 
+CAPI_DIR := $(SPDK_ROOT_DIR)/../capiflash/pkg/install_root/usr/
+
+CFLAGS += -I$(CAPI_DIR)/include -L$(CAPI_DIR)/lib -lcflash_block-0
+
 C_SRCS = bdev_capi.c bdev_capi_rpc.c
 LIBNAME = bdev_capi
 
