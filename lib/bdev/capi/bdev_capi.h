@@ -40,7 +40,7 @@
 
 typedef void (*spdk_delete_capi_complete)(void *cb_arg, int bdeverrno);
 
-struct spdk_bdev *create_capi_bdev(char *devStr, int queue_depth);
+struct spdk_bdev *create_capi_bdev(char * name, struct spdk_uuid * uuid, char * devStr, int queue_depth);
 
 void delete_bdev_capi(struct spdk_bdev *bdev, spdk_delete_capi_complete cb_fn, void *cb_arg);
 

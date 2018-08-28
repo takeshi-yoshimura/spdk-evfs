@@ -39,10 +39,10 @@
 #include "spdk_internal/log.h"
 
 struct rpc_construct_capi {
-	char *name;
-	char *uuid;
-	uint64_t num_blocks;
-	uint32_t block_size;
+	char * name;
+	char * uuid;
+	char * devStr;
+	int queue_depth;
 };
 
 static void
@@ -55,8 +55,8 @@ free_rpc_construct_capi(struct rpc_construct_capi *r)
 static const struct spdk_json_object_decoder rpc_construct_capi_decoders[] = {
 	{"name", offsetof(struct rpc_construct_capi, name), spdk_json_decode_string, true},
 	{"uuid", offsetof(struct rpc_construct_capi, uuid), spdk_json_decode_string, true},
-	{"num_blocks", offsetof(struct rpc_construct_capi, num_blocks), spdk_json_decode_uint64},
-	{"block_size", offsetof(struct rpc_construct_capi, block_size), spdk_json_decode_uint32},
+	{"devStr", offsetof(struct rpc_construct_capi, devStr), spdk_json_decode_string},
+	{"queueDepth", offsetof(struct rpc_construct_capi, queue_depth), spdk_json_decode_int32},
 };
 
 static void
@@ -83,7 +83,7 @@ spdk_rpc_construct_capi_bdev(struct spdk_jsonrpc_request *request,
 		uuid = &decoded_uuid;
 	}
 
-	bdev = create_capi_bdev(req.name, uuid, req.num_blocks, req.block_size);
+	bdev = create_capi_bdev(req.name, uuid, req.devStr, req.queue_depth);
 	if (bdev == NULL) {
 		goto invalid;
 	}

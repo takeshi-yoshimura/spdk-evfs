@@ -348,7 +348,7 @@ static void capi_bdev_destroy_cb(void *io_device, void *ctx_buf)
 	spdk_poller_unregister(&ch->poller);
 }
 
-struct spdk_bdev *create_capi_bdev(char * devStr, int queue_depth)
+struct spdk_bdev *create_capi_bdev(char * name, struct spdk_uuid * uuid, char * devStr, int queue_depth)
 {
 	struct capi_bdev *bdev;
 	int rc;
@@ -382,7 +382,11 @@ struct spdk_bdev *create_capi_bdev(char * devStr, int queue_depth)
 		goto close_cblk;
 	}
 
-	bdev->disk.name = spdk_sprintf_alloc("CAPI%d", capi_bdev_count++);
+	if (name) {
+		bdev->disk.name = strdup(name);
+	} else {
+		bdev->disk.name = spdk_sprintf_alloc("CAPI%d", capi_bdev_count++);
+	}
 	if (!bdev->disk.name) {
 		goto close_cblk;
 	}
@@ -392,7 +396,11 @@ struct spdk_bdev *create_capi_bdev(char * devStr, int queue_depth)
 	bdev->disk.write_cache = 0;
 	bdev->disk.blocklen = BLK_SIZE;
 	bdev->disk.blockcnt = lun_size / BLK_SIZE;
-	spdk_uuid_generate(&bdev->disk.uuid);
+	if (uuid) {
+		bdev->disk.uuid = *uuid;
+	} else {
+		spdk_uuid_generate(&bdev->disk.uuid);
+	}
 	bdev->disk.ctxt = bdev;
 	bdev->disk.fn_table = &capi_fn_table;
 	bdev->disk.module = &capi_if;
