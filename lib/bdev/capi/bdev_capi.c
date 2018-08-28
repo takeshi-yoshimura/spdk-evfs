@@ -48,8 +48,7 @@
 #include "spdk/bdev_module.h"
 #include "spdk_internal/log.h"
 
-#include "capiflash/src/include/capiblock.h"
-#include "capiflash/src/include/pbuf.h"
+#include "capiblock.h"
 
 
 #define BLK_SIZE (4 * 1024)
