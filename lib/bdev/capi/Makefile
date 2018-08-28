@@ -34,7 +34,7 @@
 SPDK_ROOT_DIR := $(abspath $(CURDIR)/../../..)
 include $(SPDK_ROOT_DIR)/mk/spdk.common.mk
 
-CAPI_DIR := $(SPDK_ROOT_DIR)/../capiflash/pkg/install_root/usr/
+CAPI_DIR := $(abspath $(CONFIG_CAPI_DIR))
 
 CFLAGS += -I$(CAPI_DIR)/include -L$(CAPI_DIR)/lib -lcflash_block-0
 

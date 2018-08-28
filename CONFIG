@@ -112,3 +112,4 @@ CONFIG_CRYPTO?=n
 CONFIG_SHARED?=n
 
 CONFIG_CAPI?=y
+CONFIG_CAPI_DIR?=$(SPDK_ROOT_DIR)/lib/capi/capiflash/pkg/install_root/usr
