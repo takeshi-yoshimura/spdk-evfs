@@ -53,6 +53,14 @@ BLOCKDEV_MODULES_LIST += bdev_iscsi
 # Fedora installs libiscsi to /usr/lib64/iscsi for some reason.
 BLOCKDEV_MODULES_DEPS += -L/usr/lib64/iscsi -liscsi
 endif
+ifeq ($(CONFIG_CAPI),y)
+BLOCKDEV_MODULES_LIST += bdev_capi
+CAPI_DIR := $(abspath $(CONFIG_CAPI_DIR))
+#BLOCKDEV_MODULES_DEPS += -L$(CAPI_DIR)/lib
+BLOCKDEV_MODULES_DEPS2 = -L$(CAPI_DIR)/lib -lcflsh_block-0
+endif
+
+
 endif
 
 ifeq ($(CONFIG_RBD),y)
@@ -86,6 +94,7 @@ COPY_MODULES_LIST = copy_ioat ioat
 
 BLOCKDEV_MODULES_LINKER_ARGS = -Wl,--whole-archive \
 			       $(BLOCKDEV_MODULES_LIST:%=-lspdk_%) \
+			       $(BLOCKDEV_MODULES_DEPS2) \
 			       -Wl,--no-whole-archive \
 			       $(BLOCKDEV_MODULES_DEPS)
 
@@ -94,6 +103,7 @@ BLOCKDEV_MODULES_FILES = $(call spdk_lib_list_to_files,$(BLOCKDEV_MODULES_LIST))
 BLOCKDEV_NO_LVOL_MODULES_LIST = $(filter-out $(LVOL_MODULES_LIST),$(BLOCKDEV_MODULES_LIST))
 BLOCKDEV_NO_LVOL_MODULES_LINKER_ARGS = -Wl,--whole-archive \
 			       $(BLOCKDEV_NO_LVOL_MODULES_LIST:%=-lspdk_%) \
+			       $(BLOCKDEV_MODULES_DEPS2) \
 			       -Wl,--no-whole-archive \
 			       $(BLOCKDEV_MODULES_DEPS)
 

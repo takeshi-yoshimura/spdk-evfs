@@ -46,6 +46,7 @@ DIRS-y += error gpt lvol malloc null nvme passthru rpc split
 
 ifeq ($(OS),Linux)
 DIRS-y += aio
+DIRS-$(CONFIG_CAPI) += capi
 DIRS-$(CONFIG_ISCSI_INITIATOR) += iscsi
 DIRS-$(CONFIG_VIRTIO) += virtio
 DIRS-$(CONFIG_PMDK) += pmem

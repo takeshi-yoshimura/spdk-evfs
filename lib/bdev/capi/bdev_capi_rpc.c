@@ -72,7 +72,7 @@ spdk_rpc_construct_capi_bdev(struct spdk_jsonrpc_request *request,
 	if (spdk_json_decode_object(params, rpc_construct_capi_decoders,
 				    SPDK_COUNTOF(rpc_construct_capi_decoders),
 				    &req)) {
-		SPDK_DEBUGLOG(SPDK_LOG_BDEV_capi, "spdk_json_decode_object failed\n");
+		SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "spdk_json_decode_object failed\n");
 		goto invalid;
 	}
 
@@ -145,14 +145,14 @@ spdk_rpc_delete_capi_bdev(struct spdk_jsonrpc_request *request,
 	if (spdk_json_decode_object(params, rpc_delete_capi_decoders,
 				    SPDK_COUNTOF(rpc_delete_capi_decoders),
 				    &req)) {
-		SPDK_DEBUGLOG(SPDK_LOG_BDEV_capi, "spdk_json_decode_object failed\n");
+		SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "spdk_json_decode_object failed\n");
 		rc = -EINVAL;
 		goto invalid;
 	}
 
 	bdev = spdk_bdev_get_by_name(req.name);
 	if (bdev == NULL) {
-		SPDK_INFOLOG(SPDK_LOG_BDEV_capi, "bdev '%s' does not exist\n", req.name);
+		SPDK_INFOLOG(SPDK_LOG_BDEV_CAPI, "bdev '%s' does not exist\n", req.name);
 		rc = -ENODEV;
 		goto invalid;
 	}
