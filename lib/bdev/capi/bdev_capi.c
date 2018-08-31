@@ -447,7 +447,7 @@ static int bdev_capi_initialize(void)
 	}
 
 	g_zero_buffer = spdk_dma_zmalloc(BLK_SIZE, BLK_SIZE, NULL);
-	if (g_zero_buffer) {
+	if (!g_zero_buffer) {
         SPDK_ERRLOG("spdk_dma_zmalloc() failed\n");
         return -ENOMEM;
 	}
