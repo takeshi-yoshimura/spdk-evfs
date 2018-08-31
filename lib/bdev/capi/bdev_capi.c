@@ -165,6 +165,7 @@ static int bdev_capi_writev(struct capi_bdev *bdev, struct capi_io_channel *ch, 
 		uint64_t nblocks = spdk_min(iov[i].iov_len / BLK_SIZE, remaining_count);
 		if (nblocks > 0) {
 			rc = cblk_awrite(bdev->chunk_id, iov[i].iov_base, dst_lba, nblocks, &bio->tag, 0, 0);
+			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_awrite(%d, %p, %ld, %ld, %d, 0, 0)\n", bdev->chunk_id, iov[i].iov_base, dst_lba, nblocks, bio->tag);
 			if (spdk_unlikely(rc < 0)) {
 				return errno;
 			}
