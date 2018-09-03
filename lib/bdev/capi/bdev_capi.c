@@ -508,7 +508,6 @@ static void _bdev_capi_finish_cb(void *arg)
 {
 	spdk_dma_free(g_zero_buffer);
 	cblk_term(NULL, 0);
-	spdk_bdev_module_finish_done();
 }
 
 static void bdev_capi_finish(void)
