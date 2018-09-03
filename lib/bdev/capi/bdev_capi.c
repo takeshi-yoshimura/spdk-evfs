@@ -512,7 +512,9 @@ static void _bdev_capi_finish_cb(void *arg)
 
 static void bdev_capi_finish(void)
 {
-	spdk_io_device_unregister(&g_capi_bdev_head, _bdev_capi_finish_cb);
+	if (!TAILQ_EMPTY(&g_capi_bdev_head)) {
+		spdk_io_device_unregister(&g_capi_bdev_head, _bdev_capi_finish_cb);
+	}
 }
 
 static void bdev_capi_get_spdk_running_config(FILE *fp)
