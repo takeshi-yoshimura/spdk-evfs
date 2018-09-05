@@ -85,7 +85,6 @@ static int capi_bdev_count = 0;
 
 struct capi_bdev_io {
 	int tag;
-	int harvest;
 };
 
 struct capi_io_channel {
@@ -120,7 +119,6 @@ static int bdev_capi_readv(struct capi_bdev *bdev, struct capi_bdev_io *bio,
 			if (rc < 0) {
 				return errno;
 			}
-			bio->harvest = 1;
 			src_lba += nblocks * BLK_SIZE;
 			remaining_count -= nblocks;
 		}
@@ -169,7 +167,6 @@ static int bdev_capi_writev(struct capi_bdev *bdev, struct capi_io_channel *ch, 
 			if (spdk_unlikely(rc < 0)) {
 				return errno;
 			}
-			bio->harvest = 1;
 			dst_lba += nblocks * BLK_SIZE;
 			remaining_count -= nblocks;
 		}
@@ -187,7 +184,6 @@ static int bdev_capi_unmap(struct capi_bdev *bdev, struct capi_io_channel *ch, s
 {
 	int rc = cblk_aunmap(bdev->chunk_id, g_zero_buffer, lba, lba_count, &bio->tag, 0, 0);
 	if (rc == 0) {
-	    bio->harvest = 1;
 		TAILQ_INSERT_TAIL(&ch->io, bdev_io, module_link);
 		return 0;
 	}
@@ -312,40 +308,26 @@ static int capi_io_poll(void *arg)
 	int rc, c = 0;
 	uint64_t status;
 	struct spdk_bdev_io *bdev_io;
-	int checked = 0;
-    TAILQ_HEAD(, spdk_bdev_io)	io;
+	int pflag = 0;
 
-    TAILQ_INIT(&io);
-    TAILQ_SWAP(&ch->io, &io, spdk_bdev_io, module_link);
+	TAILQ_FOREACH(bdev_io, &ch->io, module_link) {
+		struct capi_bdev * bdev = (struct capi_bdev *)bdev_io->bdev->ctxt;
+		struct capi_bdev_io *bio = (struct capi_bdev_io *)bdev_io->driver_ctx;
 
-    TAILQ_FOREACH(bdev_io, &io, module_link) {
-        struct capi_bdev * bdev = (struct capi_bdev *)bdev_io->bdev->ctxt;
-        struct capi_bdev_io *bio = (struct capi_bdev_io *) bdev_io->driver_ctx;
-        if (bio->harvest == 0 || checked > 0) {
-            rc = cblk_aresult(bdev->chunk_id, &bio->tag, &status, CBLK_ARESULT_NO_HARVEST);
-        } else {
-            rc = cblk_aresult(bdev->chunk_id, &bio->tag, &status, 0);
-            checked = 1;
-        }
-        if (rc > 0) {
-            c++;
-            SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_aresult(%d, %d, status, %d)=SUCCESS\n", bdev->chunk_id, bio->tag, pflag);
-            spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_SUCCESS);
-            bio->harvest = -1;
-        } else if (rc < 0) {
-            SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_aresult(%d, %d, status, %d)=FAIL\n", bdev->chunk_id, bio->tag, pflag);
-            spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
-            bio->harvest = -1;
-        } else {
-            bio->harvest = 0;
-        }
-    }
-
-	TAILQ_FOREACH(bdev_io, &io, module_link) {
-        struct capi_bdev_io *bio = (struct capi_bdev_io *) bdev_io->driver_ctx;
-        if (bio->harvest != -1) {
-            TAILQ_INSERT_HEAD(&ch->io, bdev_io, module_link);
-        }
+		rc = cblk_aresult(bdev->chunk_id, &bio->tag, &status, pflag);
+		if (rc > 0) {
+			c++;
+			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_aresult(%d, %d, status, %d)=SUCCESS\n", bdev->chunk_id, bio->tag, pflag);
+			spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_SUCCESS);
+			TAILQ_REMOVE(&ch->io, bdev_io, module_link);
+		} else if (rc < 0) {
+			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_aresult(%d, %d, status, %d)=FAIL\n", bdev->chunk_id, bio->tag, pflag);
+			spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
+			TAILQ_REMOVE(&ch->io, bdev_io, module_link);
+		}
+		if (pflag == 0) {
+		    pflag = CBLK_ARESULT_NO_HARVEST;
+		}
 	}
 
 	return c;
