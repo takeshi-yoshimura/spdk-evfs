@@ -85,7 +85,6 @@ static int capi_bdev_count = 0;
 
 struct capi_bdev_io {
 	int tag;
-	int pflag;
 };
 
 struct capi_io_channel {
@@ -120,7 +119,6 @@ static int bdev_capi_readv(struct capi_bdev *bdev, struct capi_bdev_io *bio,
 			if (rc < 0) {
 				return errno;
 			}
-			bio->pflag = 0;
 			src_lba += nblocks * BLK_SIZE;
 			remaining_count -= nblocks;
 		}
@@ -169,7 +167,6 @@ static int bdev_capi_writev(struct capi_bdev *bdev, struct capi_io_channel *ch, 
 			if (spdk_unlikely(rc < 0)) {
 				return errno;
 			}
-			bio->pflag = 0;
 			dst_lba += nblocks * BLK_SIZE;
 			remaining_count -= nblocks;
 		}
@@ -188,7 +185,6 @@ static int bdev_capi_unmap(struct capi_bdev *bdev, struct capi_io_channel *ch, s
 	int rc = cblk_aunmap(bdev->chunk_id, g_zero_buffer, lba, lba_count, &bio->tag, 0, 0);
 	if (rc == 0) {
 		TAILQ_INSERT_TAIL(&ch->io, bdev_io, module_link);
-		bio->pflag = 0;
 		return 0;
 	}
 	return errno;
@@ -312,21 +308,25 @@ static int capi_io_poll(void *arg)
 	int rc, c = 0;
 	uint64_t status;
 	struct spdk_bdev_io *bdev_io;
+	int pflag = 0;
 
 	TAILQ_FOREACH(bdev_io, &ch->io, module_link) {
 		struct capi_bdev * bdev = (struct capi_bdev *)bdev_io->bdev->ctxt;
 		struct capi_bdev_io *bio = (struct capi_bdev_io *)bdev_io->driver_ctx;
 
-		rc = cblk_aresult(bdev->chunk_id, &bio->tag, &status, bio->pflag);
+		rc = cblk_aresult(bdev->chunk_id, &bio->tag, &status, pflag);
 		if (rc > 0) {
 			c++;
-			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_aresult(%d, %d, status, %d)=SUCCESS\n", bdev->chunk_id, bio->tag, bio->pflag);
+			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_aresult(%d, %d, status, %d)=SUCCESS\n", bdev->chunk_id, bio->tag, pflag);
 			spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_SUCCESS);
 			TAILQ_REMOVE(&ch->io, bdev_io, module_link);
 		} else if (rc < 0) {
-			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_aresult(%d, %d, status, %d)=FAIL\n", bdev->chunk_id, bio->tag, bio->pflag);
+			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_aresult(%d, %d, status, %d)=FAIL\n", bdev->chunk_id, bio->tag, pflag);
 			spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
 			TAILQ_REMOVE(&ch->io, bdev_io, module_link);
+		}
+		if (pflag == 0) {
+		    pflag = CBLK_ARESULT_NO_HARVEST;
 		}
 	}
 
