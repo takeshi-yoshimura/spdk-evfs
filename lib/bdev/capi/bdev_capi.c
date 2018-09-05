@@ -305,27 +305,10 @@ static const struct spdk_bdev_fn_table capi_fn_table = {
 static int capi_io_poll(void *arg)
 {
 	struct capi_io_channel *ch = arg;
-	int rc, c = 0, queued = 0;
+	int rc, c = 0;
 	uint64_t status;
 	struct spdk_bdev_io *bdev_io;
 	int pflag = 0;
-
-    TAILQ_FOREACH(bdev_io, &ch->io, module_link) {
-        struct capi_bdev * bdev = (struct capi_bdev *)bdev_io->bdev->ctxt;
-        struct capi_bdev_io *bio = (struct capi_bdev_io *)bdev_io->driver_ctx;
-
-        rc = cblk_aresult(bdev->chunk_id, &bio->tag, &status, CBLK_ARESULT_NO_HARVEST);
-        if (rc > 0) {
-            c++;
-            SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_aresult(%d, %d, status, %d)=SUCCESS\n", bdev->chunk_id, bio->tag, pflag);
-            spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_SUCCESS);
-            TAILQ_REMOVE(&ch->io, bdev_io, module_link);
-        } else if (rc < 0) {
-            SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_aresult(%d, %d, status, %d)=FAIL\n", bdev->chunk_id, bio->tag, pflag);
-            spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
-            TAILQ_REMOVE(&ch->io, bdev_io, module_link);
-        }
-    }
 
 	TAILQ_FOREACH(bdev_io, &ch->io, module_link) {
 		struct capi_bdev * bdev = (struct capi_bdev *)bdev_io->bdev->ctxt;
