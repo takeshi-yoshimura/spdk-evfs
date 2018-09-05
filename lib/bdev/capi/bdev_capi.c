@@ -305,10 +305,17 @@ static const struct spdk_bdev_fn_table capi_fn_table = {
 static int capi_io_poll(void *arg)
 {
 	struct capi_io_channel *ch = arg;
-	int rc, c = 0;
+	int rc, c = 0, queued = 0;
 	uint64_t status;
 	struct spdk_bdev_io *bdev_io;
 	int pflag = 0;
+
+    TAILQ_FOREACH(bdev_io, &ch->io, module_link) {
+        ++queued;
+    }
+    if (queued < 30) {
+        return 0;
+    }
 
 	TAILQ_FOREACH(bdev_io, &ch->io, module_link) {
 		struct capi_bdev * bdev = (struct capi_bdev *)bdev_io->bdev->ctxt;
