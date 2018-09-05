@@ -506,7 +506,12 @@ free_buffer:
 
 static void _bdev_capi_finish_cb(void *arg)
 {
+    struct capi_bdev *bdev;
+
 	spdk_dma_free(g_zero_buffer);
+    TAILQ_FOREACH(bdev, &g_capi_bdev_head, link) {
+        cblk_close(bdev->chunk_id, 0);
+    }
 	cblk_term(NULL, 0);
 }
 
