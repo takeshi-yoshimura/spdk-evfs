@@ -60,7 +60,7 @@ static void bdev_capi_sync_finish(void);
 static void bdev_capi_sync_get_spdk_running_config(FILE *fp);
 static int bdev_capi_sync_get_ctx_size(void);
 
-static struct spdk_bdev_module capi_if = {
+static struct spdk_bdev_module capi_sync_if = {
 		.name = "capi",
 		.module_init = bdev_capi_sync_initialize,
 		.module_fini = bdev_capi_sync_finish,
@@ -68,7 +68,7 @@ static struct spdk_bdev_module capi_if = {
 		.get_ctx_size = bdev_capi_sync_get_ctx_size,
 };
 
-SPDK_BDEV_MODULE_REGISTER(&capi_if)
+SPDK_BDEV_MODULE_REGISTER(&capi_sync_if)
 
 struct capi_bdev_sync {
 	struct spdk_bdev disk;
@@ -289,7 +289,7 @@ static void bdev_capi_sync_write_json_config(struct spdk_bdev *bdev, struct spdk
 	spdk_json_write_object_end(w);
 }
 
-static const struct spdk_bdev_fn_table capi_fn_table = {
+static const struct spdk_bdev_fn_table capi_sync_fn_table = {
 	.destruct		= bdev_capi_sync_destruct,
 	.submit_request		= bdev_capi_sync_submit_request,
 	.io_type_supported	= bdev_capi_sync_io_type_supported,
@@ -363,8 +363,8 @@ struct spdk_bdev *create_capi_bdev_sync(char * name, struct spdk_uuid * uuid, ch
 		spdk_uuid_generate(&bdev->disk.uuid);
 	}
 	bdev->disk.ctxt = bdev;
-	bdev->disk.fn_table = &capi_fn_table;
-	bdev->disk.module = &capi_if;
+	bdev->disk.fn_table = &capi_sync_fn_table;
+	bdev->disk.module = &capi_sync_if;
 	bdev->queue_depth = queue_depth;
 
 	SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "spdk_bdev_register\n");

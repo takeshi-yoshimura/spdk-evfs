@@ -38,7 +38,7 @@ CAPI_DIR := $(abspath $(CONFIG_CAPI_DIR))
 
 CFLAGS += -I$(CAPI_DIR)/include -L$(CAPI_DIR)/lib -lcflsh_block-0
 
-C_SRCS = bdev_capi.c bdev_capi_rpc.c
+C_SRCS = bdev_capi.c bdev_capi_sync.c bdev_capi_rpc.c
 LIBNAME = bdev_capi
 
 include $(SPDK_ROOT_DIR)/mk/spdk.lib.mk
