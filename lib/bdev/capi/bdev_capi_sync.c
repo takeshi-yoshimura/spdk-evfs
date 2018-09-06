@@ -391,7 +391,7 @@ free_bdev:
 
 void delete_bdev_capi(struct spdk_bdev *bdev, spdk_delete_capi_complete cb_fn, void *cb_arg)
 {
-	if (!bdev || bdev->module != &capi_if) {
+	if (!bdev || bdev->module != &capi_sync_if) {
 		cb_fn(cb_arg, -ENODEV);
 		return;
 	}
