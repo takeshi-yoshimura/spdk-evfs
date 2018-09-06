@@ -61,7 +61,7 @@ static void bdev_capi_sync_get_spdk_running_config(FILE *fp);
 static int bdev_capi_sync_get_ctx_size(void);
 
 static struct spdk_bdev_module capi_sync_if = {
-		.name = "capi",
+		.name = "capi_sync",
 		.module_init = bdev_capi_sync_initialize,
 		.module_fini = bdev_capi_sync_finish,
 		.config_text = bdev_capi_sync_get_spdk_running_config,
@@ -497,4 +497,4 @@ static int bdev_capi_sync_get_ctx_size(void)
 	return sizeof(struct capi_bdev_sync_io);
 }
 
-SPDK_LOG_REGISTER_COMPONENT("bdev_capi", SPDK_LOG_BDEV_CAPI_SYNC)
+SPDK_LOG_REGISTER_COMPONENT("bdev_capi_sync", SPDK_LOG_BDEV_CAPI_SYNC)
