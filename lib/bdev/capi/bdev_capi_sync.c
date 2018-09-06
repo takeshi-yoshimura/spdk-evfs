@@ -112,7 +112,7 @@ static int bdev_capi_sync_readv(struct capi_bdev_sync *bdev, struct capi_bdev_sy
 		uint64_t nblocks = spdk_min(iov[i].iov_len / BLK_SIZE, remaining_count);
 		if (nblocks > 0) {
 			rc = cblk_read(bdev->chunk_id, iov[i].iov_base, src_lba, nblocks, 0);
-			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_read(%d, %p, %ld, %ld, 0)\n", bdev->chunk_id, iov[i].iov_base, src_lba, nblocks);
+			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI_SYNC, "cblk_read(%d, %p, %ld, %ld, 0)\n", bdev->chunk_id, iov[i].iov_base, src_lba, nblocks);
 			if (rc < 0) {
 				return errno;
 			}
@@ -159,7 +159,7 @@ static int bdev_capi_sync_writev(struct capi_bdev_sync *bdev, struct capi_io_cha
 		uint64_t nblocks = spdk_min(iov[i].iov_len / BLK_SIZE, remaining_count);
 		if (nblocks > 0) {
 			rc = cblk_write(bdev->chunk_id, iov[i].iov_base, dst_lba, nblocks, 0);
-			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_write(%d, %p, %ld, %ld, 0)\n", bdev->chunk_id, iov[i].iov_base, dst_lba, nblocks);
+			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI_SYNC, "cblk_write(%d, %p, %ld, %ld, 0)\n", bdev->chunk_id, iov[i].iov_base, dst_lba, nblocks);
 			if (spdk_unlikely(rc < 0)) {
 				return errno;
 			}
@@ -324,19 +324,19 @@ struct spdk_bdev *create_capi_bdev_sync(char * name, struct spdk_uuid * uuid, ch
 		return NULL;
 	}
 
-	SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_open\n");
+	SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI_SYNC, "cblk_open\n");
 	bdev->chunk_id = cblk_open(devStr, queue_depth, O_RDWR, 0, CBLK_OPN_NO_INTRP_THREADS);
 	if (bdev->chunk_id == NULL_CHUNK_ID) {
 		SPDK_ERRLOG("cblk_open: errno:%d\n", errno);
 		goto free_bdev;
 	}
 
-	SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_get_attrs\n");
+	SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI_SYNC, "cblk_get_attrs\n");
 	spdk_mem_all_zero(&attrs, sizeof(attrs));
 	cblk_get_attrs(bdev->chunk_id, &attrs, 0);
 	bdev->unmap_supported = (attrs.flags1 & CFLSH_ATTR_UNMAP) != 0;
 
-	SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_get_lun_size\n");
+	SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI_SYNC, "cblk_get_lun_size\n");
 	rc = cblk_get_lun_size(bdev->chunk_id, &lun_size, 0);
 	if (rc < 0) {
 		SPDK_ERRLOG("cblk_get_lun_size failed: errno: %d\n", errno);
@@ -367,7 +367,7 @@ struct spdk_bdev *create_capi_bdev_sync(char * name, struct spdk_uuid * uuid, ch
 	bdev->disk.module = &capi_sync_if;
 	bdev->queue_depth = queue_depth;
 
-	SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "spdk_bdev_register\n");
+	SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI_SYNC, "spdk_bdev_register\n");
 	rc = spdk_bdev_register(&bdev->disk);
 	if (rc) {
 		goto free_disk_name;
@@ -375,7 +375,7 @@ struct spdk_bdev *create_capi_bdev_sync(char * name, struct spdk_uuid * uuid, ch
 
 	TAILQ_INSERT_TAIL(&g_capi_bdev_sync_head, bdev, link);
 
-	SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "open: %s queue_depth: %d chunk_id:%d lun_size:%ld map: %d\n",
+	SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI_SYNC, "open: %s queue_depth: %d chunk_id:%d lun_size:%ld map: %d\n",
 				  devStr, queue_depth, bdev->chunk_id, lun_size, bdev->unmap_supported);
 
 	return &bdev->disk;
@@ -389,7 +389,7 @@ free_bdev:
 	return NULL;
 }
 
-void delete_bdev_capi(struct spdk_bdev *bdev, spdk_delete_capi_complete cb_fn, void *cb_arg)
+void delete_bdev_capi_sync(struct spdk_bdev *bdev, spdk_delete_capi_complete cb_fn, void *cb_arg)
 {
 	if (!bdev || bdev->module != &capi_sync_if) {
 		cb_fn(cb_arg, -ENODEV);
@@ -415,7 +415,7 @@ static int bdev_capi_sync_initialize(void)
 		return -ENOMEM;
 	}
 
-	SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_init\n");
+	SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI_SYNC, "cblk_init\n");
 	rc = cblk_init(NULL, 0);
 	if (rc) {
 		SPDK_ERRLOG("cblk_init failed with rc = %d and errno = %d\n",
@@ -423,7 +423,7 @@ static int bdev_capi_sync_initialize(void)
 		goto free_buffer;
 	}
 
-	SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "spdk_io_device_register\n");
+	SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI_SYNC, "spdk_io_device_register\n");
 	spdk_io_device_register(&g_capi_bdev_sync_head, capi_bdev_sync_create_cb, capi_bdev_sync_destroy_cb,
 			sizeof(struct capi_io_channel));
 
@@ -439,7 +439,7 @@ static int bdev_capi_sync_initialize(void)
 		}
 		qdStr = spdk_conf_section_get_nmval(sp, "devConf", i, 1);
 		queue_depth = (int)strtol(qdStr, NULL, 10);
-		SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "devStr=%s, queueDepth=%d\n", devStr, queue_depth);
+		SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI_SYNC, "devStr=%s, queueDepth=%d\n", devStr, queue_depth);
 
 		bdev = create_capi_bdev_sync(NULL, NULL, devStr, queue_depth);
 		if (bdev == NULL) {
@@ -497,4 +497,4 @@ static int bdev_capi_sync_get_ctx_size(void)
 	return sizeof(struct capi_bdev_sync_io);
 }
 
-SPDK_LOG_REGISTER_COMPONENT("bdev_capi", SPDK_LOG_BDEV_CAPI)
+SPDK_LOG_REGISTER_COMPONENT("bdev_capi", SPDK_LOG_BDEV_CAPI_SYNC)
