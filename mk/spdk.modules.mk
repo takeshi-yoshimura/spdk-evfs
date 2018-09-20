@@ -57,7 +57,7 @@ ifeq ($(CONFIG_CAPI),y)
 BLOCKDEV_MODULES_LIST += bdev_capi
 CAPI_DIR := $(abspath $(CONFIG_CAPI_DIR))
 #BLOCKDEV_MODULES_DEPS += -L$(CAPI_DIR)/lib
-BLOCKDEV_MODULES_DEPS2 = -L$(CAPI_DIR)/lib -lcflsh_block-0
+BLOCKDEV_MODULES_DEPS2 = -L$(CAPI_DIR)/lib64 -lcflsh_block-0
 endif
 ifeq ($(CONFIG_CXLFLASH),y)
 BLOCKDEV_MODULES_LIST += bdev_cxlflash

@@ -298,15 +298,19 @@ static int cxlflash_io_poll(void *arg)
 		int cmd;
 		uint64_t data;
 		int rc = cxlflash_io_completion(ch->qpair, &cmd);
-		if (rc >= 0) {
+		if (rc > 0) {
 			c++;
 			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "complete: %d\n", rc);
-			cxlflash_cmdlist_remove(ch->cmdlist, cmd, &data);
-			spdk_bdev_io_complete((struct spdk_bdev_io *) data, SPDK_BDEV_IO_STATUS_SUCCESS);
+			rc = cxlflash_cmdlist_remove(ch->cmdlist, cmd, &data);
+			if (rc == 0) {
+				spdk_bdev_io_complete((struct spdk_bdev_io *) data, SPDK_BDEV_IO_STATUS_SUCCESS);
+			}
 		} else if (rc < 0) {
 			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "failed: %d\n", rc);
-			cxlflash_cmdlist_remove(ch->cmdlist, cmd, &data);
-			spdk_bdev_io_complete((struct spdk_bdev_io *) data, SPDK_BDEV_IO_STATUS_FAILED);
+			rc = cxlflash_cmdlist_remove(ch->cmdlist, cmd, &data);
+			if (rc == 0) {
+				spdk_bdev_io_complete((struct spdk_bdev_io *) data, SPDK_BDEV_IO_STATUS_FAILED);
+			}
 		} else {
 			break;
 		}
@@ -377,7 +381,7 @@ struct spdk_bdev *create_cxlflash_bdev(char * name, struct spdk_uuid * uuid, cha
 	if (name) {
 		bdev->disk.name = strdup(name);
 	} else {
-		bdev->disk.name = spdk_sprintf_alloc("CAPI%d", cxlflash_bdev_count++);
+		bdev->disk.name = spdk_sprintf_alloc("CXLFLASH%d", cxlflash_bdev_count++);
 	}
 	if (!bdev->disk.name) {
 		goto close_cblk;
@@ -437,7 +441,7 @@ static int bdev_cxlflash_initialize(void)
 	struct spdk_conf_section *sp;
 	int i, rc = 0;
 
-	sp = spdk_conf_find_section(NULL, "CAPI");
+	sp = spdk_conf_find_section(NULL, "CXLFLASH");
 	if (sp == NULL) {
 		return 0;
 	}
@@ -503,7 +507,7 @@ static void bdev_cxlflash_get_spdk_running_config(FILE *fp)
 
 	TAILQ_FOREACH(bdev, &g_cxlflash_bdev_head, link) {
 		if (idx++ == 0) {
-			fprintf(fp, "\n[CAPI]\n");
+			fprintf(fp, "\n[CXLFLASH]\n");
 		}
 		fprintf(fp, "  devConf %s %d\n", bdev->devStr, bdev->queue_depth);
 	}
