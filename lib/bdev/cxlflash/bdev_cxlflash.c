@@ -112,7 +112,7 @@ static int bdev_cxlflash_readv(struct cxlflash_io_channel *ch, struct spdk_bdev_
 		uint64_t nblocks = spdk_min(iov[i].iov_len / BLK_SIZE, remaining_count);
 		if (nblocks > 0) {
 		    rc = cxlflash_aread(ch->qpair, iov[i].iov_base, src_lba, nblocks);
-			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "cxlflash_aread(%p, %p, %ld, %ld)\n", ch->qpair, iov[i].iov_base, src_lba, nblocks);
+			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "cxlflash_aread(%p, %p, %ld, %ld): %d, %p\n", ch->qpair, iov[i].iov_base, src_lba, nblocks, rc, bdev_io);
 			if (rc < 0) {
 				return errno;
 			}
@@ -155,8 +155,8 @@ static int bdev_cxlflash_writev(struct cxlflash_io_channel *ch, struct spdk_bdev
 	for (i = 0; i < iovcnt && 0 < remaining_count; i++) {
 		uint64_t nblocks = spdk_min(iov[i].iov_len / BLK_SIZE, remaining_count);
 		if (nblocks > 0) {
-            rc = cxlflash_aread(ch->qpair, iov[i].iov_base, dst_lba, nblocks);
-			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "cblk_awrite(%p, %p, %ld, %ld, %ld)\n", ch->qpair, iov[i].iov_base, dst_lbag, nblocks);
+            rc = cxlflash_awrite(ch->qpair, iov[i].iov_base, dst_lba, nblocks);
+			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "cxlflash_awrite(%p, %p, %ld, %ld): %d, %p\n", ch->qpair, iov[i].iov_base, dst_lba, nblocks, rc, bdev_io);
 			if (spdk_unlikely(rc < 0)) {
 				return errno;
 			}
@@ -300,13 +300,13 @@ static int cxlflash_io_poll(void *arg)
 		int rc = cxlflash_io_completion(ch->qpair, &cmd);
 		if (rc > 0) {
 			c++;
-			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "complete: %d\n", rc);
 			rc = cxlflash_cmdlist_remove(ch->cmdlist, cmd, &data);
+			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "complete: %d, %p, %d\n", cmd, (void *)data, rc);
 			if (rc == 0) {
 				spdk_bdev_io_complete((struct spdk_bdev_io *) data, SPDK_BDEV_IO_STATUS_SUCCESS);
 			}
 		} else if (rc < 0) {
-			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "failed: %d\n", rc);
+			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "failed: %d, %p, %d\n", cmd, (void *)data, rc);
 			rc = cxlflash_cmdlist_remove(ch->cmdlist, cmd, &data);
 			if (rc == 0) {
 				spdk_bdev_io_complete((struct spdk_bdev_io *) data, SPDK_BDEV_IO_STATUS_FAILED);
@@ -326,7 +326,6 @@ static int cxlflash_bdev_create_cb(void *io_device, void *ctx_buf)
 {
 	struct cxlflash_io_channel *ch = ctx_buf;
 
-	ch->poller = spdk_poller_register(cxlflash_io_poll, ch, 0);
 	ch->cmdlist = cxlflash_cmdlist_alloc(g_queue_depth);
 	if (!ch->cmdlist) {
         spdk_poller_unregister(&ch->poller);
@@ -341,7 +340,9 @@ static int cxlflash_bdev_create_cb(void *io_device, void *ctx_buf)
 	    SPDK_ERRLOG("failed to create cxlflash_open(%s, %lu)\n", g_devStr, g_queue_depth);
 	    return -1;
 	}
+	ch->poller = spdk_poller_register(cxlflash_io_poll, ch, 0);
 
+	SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "create qpair: %p\n", ch->qpair);
 	return 0;
 }
 
@@ -357,6 +358,7 @@ struct spdk_bdev *create_cxlflash_bdev(char * name, struct spdk_uuid * uuid, cha
 {
 	struct cxlflash_bdev *bdev;
 	int rc;
+	size_t lun_size;
     cxlflash_qpair_t * qpair; /* tmp qpair */
 
 	if (queue_depth < 0) {
@@ -387,11 +389,13 @@ struct spdk_bdev *create_cxlflash_bdev(char * name, struct spdk_uuid * uuid, cha
 		goto close_cblk;
 	}
 
+	lun_size = cxlflash_get_last_lba(qpair);
+
 	bdev->devStr = devStr;
 	bdev->disk.product_name = "cxlflash";
 	bdev->disk.write_cache = 0;
 	bdev->disk.blocklen = BLK_SIZE;
-	bdev->disk.blockcnt = cxlflash_get_last_lba(qpair);
+	bdev->disk.blockcnt = lun_size;
 	if (uuid) {
 		bdev->disk.uuid = *uuid;
 	} else {
@@ -410,8 +414,8 @@ struct spdk_bdev *create_cxlflash_bdev(char * name, struct spdk_uuid * uuid, cha
 
 	TAILQ_INSERT_TAIL(&g_cxlflash_bdev_head, bdev, link);
 
-	SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "open: %s queue_depth: %d chunk_id:%d lun_size:%ld map: %d\n",
-				  devStr, queue_depth, bdev->chunk_id, lun_size, bdev->unmap_supported);
+	SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "open: %s queue_depth: %d lun_size:%ld map: %d\n",
+				  devStr, queue_depth, lun_size, bdev->unmap_supported);
 
 	cxlflash_close(qpair);
 
