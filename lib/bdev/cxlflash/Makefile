@@ -36,9 +36,9 @@ include $(SPDK_ROOT_DIR)/mk/spdk.common.mk
 
 CXLFLASH_DIR := $(abspath $(CONFIG_CXLFLASH_DIR))
 
-CFLAGS += -I$(CAPI_DIR)/include -L$(CXLFLASH_DIR)/lib -lcxlflash
+CFLAGS += -I$(CXLFLASH_DIR)/include -L$(CXLFLASH_DIR)/lib -lcxlflash
 
-C_SRCS = bdev_cxlflash.c bdev_cxlflash_sync.c bdev_cxlflash_rpc.c
+C_SRCS = bdev_cxlflash.c bdev_cxlflash_rpc.c
 LIBNAME = bdev_cxlflash
 
 include $(SPDK_ROOT_DIR)/mk/spdk.lib.mk

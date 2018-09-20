@@ -112,7 +112,7 @@ static int bdev_cxlflash_readv(struct cxlflash_io_channel *ch, struct spdk_bdev_
 		uint64_t nblocks = spdk_min(iov[i].iov_len / BLK_SIZE, remaining_count);
 		if (nblocks > 0) {
 		    rc = cxlflash_aread(ch->qpair, iov[i].iov_base, src_lba, nblocks);
-			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cxlflash_aread(%p, %p, %ld, %ld)\n", ch->qpair, iov[i].iov_base, src_lba, nblocks);
+			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "cxlflash_aread(%p, %p, %ld, %ld)\n", ch->qpair, iov[i].iov_base, src_lba, nblocks);
 			if (rc < 0) {
 				return errno;
 			}
@@ -156,7 +156,7 @@ static int bdev_cxlflash_writev(struct cxlflash_io_channel *ch, struct spdk_bdev
 		uint64_t nblocks = spdk_min(iov[i].iov_len / BLK_SIZE, remaining_count);
 		if (nblocks > 0) {
             rc = cxlflash_aread(ch->qpair, iov[i].iov_base, dst_lba, nblocks);
-			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_awrite(%p, %p, %ld, %ld, %ld)\n", ch->qpair, iov[i].iov_base, dst_lbag, nblocks);
+			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "cblk_awrite(%p, %p, %ld, %ld, %ld)\n", ch->qpair, iov[i].iov_base, dst_lbag, nblocks);
 			if (spdk_unlikely(rc < 0)) {
 				return errno;
 			}
@@ -202,7 +202,6 @@ static bool bdev_cxlflash_io_type_supported(void *ctx, enum spdk_bdev_io_type io
 static int _bdev_cxlflash_submit_request(struct spdk_io_channel *_ch, struct spdk_bdev_io *bdev_io)
 {
     struct cxlflash_bdev * bdev = (struct cxlflash_bdev *)bdev_io->bdev->ctxt;
-    struct cxlflash_bdev_io * bio = (struct cxlflash_bdev_io *)bdev_io->driver_ctx;
     struct cxlflash_io_channel *ch = spdk_io_channel_get_ctx(_ch);
 	uint32_t block_size = bdev_io->bdev->blocklen;
 
@@ -301,11 +300,11 @@ static int cxlflash_io_poll(void *arg)
 		int rc = cxlflash_io_completion(ch->qpair, &cmd);
 		if (rc >= 0) {
 			c++;
-			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "complete: %d\n", rc);
+			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "complete: %d\n", rc);
 			cxlflash_cmdlist_remove(ch->cmdlist, cmd, &data);
 			spdk_bdev_io_complete((struct spdk_bdev_io *) data, SPDK_BDEV_IO_STATUS_SUCCESS);
 		} else if (rc < 0) {
-			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "failed: %d\n", rc);
+			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "failed: %d\n", rc);
 			cxlflash_cmdlist_remove(ch->cmdlist, cmd, &data);
 			spdk_bdev_io_complete((struct spdk_bdev_io *) data, SPDK_BDEV_IO_STATUS_FAILED);
 		} else {
@@ -327,7 +326,7 @@ static int cxlflash_bdev_create_cb(void *io_device, void *ctx_buf)
 	ch->cmdlist = cxlflash_cmdlist_alloc(g_queue_depth);
 	if (!ch->cmdlist) {
         spdk_poller_unregister(&ch->poller);
-        SPDK_ERRLOG("failed to create cxlflash_cmdlist_alloc(%d)\n", g_queue_depth);
+        SPDK_ERRLOG("failed to create cxlflash_cmdlist_alloc(%lu)\n", g_queue_depth);
         return -1;
 	}
 
@@ -335,7 +334,7 @@ static int cxlflash_bdev_create_cb(void *io_device, void *ctx_buf)
 	if (!ch->qpair) {
 	    cxlflash_cmdlist_free(ch->cmdlist);
 	    spdk_poller_unregister(&ch->poller);
-	    SPDK_ERRLOG("failed to create cxlflash_open(%s, %d)\n", g_devStr, g_queue_depth);
+	    SPDK_ERRLOG("failed to create cxlflash_open(%s, %lu)\n", g_devStr, g_queue_depth);
 	    return -1;
 	}
 
@@ -399,7 +398,7 @@ struct spdk_bdev *create_cxlflash_bdev(char * name, struct spdk_uuid * uuid, cha
 	bdev->disk.module = &cxlflash_if;
 	bdev->queue_depth = queue_depth;
 
-	SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "spdk_bdev_register\n");
+	SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "spdk_bdev_register\n");
 	rc = spdk_bdev_register(&bdev->disk);
 	if (rc) {
 		goto free_disk_name;
@@ -407,7 +406,7 @@ struct spdk_bdev *create_cxlflash_bdev(char * name, struct spdk_uuid * uuid, cha
 
 	TAILQ_INSERT_TAIL(&g_cxlflash_bdev_head, bdev, link);
 
-	SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "open: %s queue_depth: %d chunk_id:%d lun_size:%ld map: %d\n",
+	SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "open: %s queue_depth: %d chunk_id:%d lun_size:%ld map: %d\n",
 				  devStr, queue_depth, bdev->chunk_id, lun_size, bdev->unmap_supported);
 
 	cxlflash_close(qpair);
@@ -449,7 +448,7 @@ static int bdev_cxlflash_initialize(void)
 		return -ENOMEM;
 	}
 
-	SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "spdk_io_device_register\n");
+	SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "spdk_io_device_register\n");
 	spdk_io_device_register(&g_cxlflash_bdev_head, cxlflash_bdev_create_cb, cxlflash_bdev_destroy_cb,
 			sizeof(struct cxlflash_io_channel));
 
@@ -465,7 +464,7 @@ static int bdev_cxlflash_initialize(void)
 		}
 		qdStr = spdk_conf_section_get_nmval(sp, "devConf", i, 1);
 		queue_depth = (int)strtol(qdStr, NULL, 10);
-		SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "devStr=%s, queueDepth=%d\n", devStr, queue_depth);
+		SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "devStr=%s, queueDepth=%d\n", devStr, queue_depth);
 
 		bdev = create_cxlflash_bdev(NULL, NULL, devStr, queue_depth);
 		if (bdev == NULL) {
@@ -487,12 +486,7 @@ free_buffer:
 
 static void _bdev_cxlflash_finish_cb(void *arg)
 {
-    struct cxlflash_bdev *bdev;
-
 	spdk_dma_free(g_zero_buffer);
-    TAILQ_FOREACH(bdev, &g_cxlflash_bdev_head, link) {
-        cxlflash_close(bdev->qpair);
-    }
 }
 
 static void bdev_cxlflash_finish(void)
@@ -520,4 +514,4 @@ static int bdev_cxlflash_get_ctx_size(void)
 	return 0;
 }
 
-SPDK_LOG_REGISTER_COMPONENT("bdev_cxlflash", SPDK_LOG_BDEV_CAPI)
+SPDK_LOG_REGISTER_COMPONENT("bdev_cxlflash", SPDK_LOG_BDEV_CXLFLASH)
