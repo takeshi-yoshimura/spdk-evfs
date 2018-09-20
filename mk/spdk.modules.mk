@@ -59,7 +59,11 @@ CAPI_DIR := $(abspath $(CONFIG_CAPI_DIR))
 #BLOCKDEV_MODULES_DEPS += -L$(CAPI_DIR)/lib
 BLOCKDEV_MODULES_DEPS2 = -L$(CAPI_DIR)/lib -lcflsh_block-0
 endif
-
+ifeq ($(CONFIG_CXLFLASH),y)
+BLOCKDEV_MODULES_LIST += bdev_cxlflash
+CXLFLASH_DIR := $(abspath $(CONFIG_CXLFLASH_DIR))
+BLOCKDEV_MODULES_DEPS2 += -L$(CXLFLASH_DIR)/lib -lcxlflash
+endif
 
 endif
 

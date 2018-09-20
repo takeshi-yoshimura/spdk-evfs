@@ -113,3 +113,6 @@ CONFIG_SHARED?=n
 
 CONFIG_CAPI?=y
 CONFIG_CAPI_DIR?=$(SPDK_ROOT_DIR)/lib/bdev/capi/capiflash/pkg/install_root/usr
+
+CONFIG_CXLFLASH?=y
+CONFIG_CXLFLASH_DIR?=$(SPDK_ROOT_DIR)/lib/bdev/cxlflash/libcxlflash/build
