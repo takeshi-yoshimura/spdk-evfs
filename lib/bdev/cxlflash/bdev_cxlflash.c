@@ -357,10 +357,8 @@ static int cxlflash_io_poll(void *arg) {
                 if (cbio->nr_wait_cmds == cbio->nr_completed) {
                     c++;
                     spdk_bdev_io_complete(bio, SPDK_BDEV_IO_STATUS_SUCCESS);
-                    break;
                 } else if (cbio->nr_wait_cmds == cbio->nr_completed + cbio->nr_failed) {
                     spdk_bdev_io_complete(bio, SPDK_BDEV_IO_STATUS_FAILED);
-                    break;
                 }
             }
         } else if (rc < 0) {
@@ -377,7 +375,6 @@ static int cxlflash_io_poll(void *arg) {
                 }
                 if (cbio->nr_wait_cmds == cbio->nr_completed + cbio->nr_failed) {
                     spdk_bdev_io_complete(bio, SPDK_BDEV_IO_STATUS_FAILED);
-                    break;
                 }
             }
         } else {
