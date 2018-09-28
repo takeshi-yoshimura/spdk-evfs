@@ -131,7 +131,7 @@ bdev_cxlflash_readv(struct cxlflash_io_channel *ch, struct spdk_bdev_io *bdev_io
         if (nblocks > 0) {
             int rc;
             rc = cxlflash_cmdlist_reserve(ch->cmdlist);
-            if (!rc) {
+            if (rc) {
                 SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "cmdlist is full\n");
                 ++bio->failed_at_request;
                 return -1;
@@ -186,7 +186,7 @@ static int bdev_cxlflash_writev(struct cxlflash_io_channel *ch, struct spdk_bdev
         if (nblocks > 0) {
             int rc;
             rc = cxlflash_cmdlist_reserve(ch->cmdlist);
-            if (!rc) {
+            if (rc) {
                 SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "cmdlist is full\n");
                 ++bio->failed_at_request;
                 return -1;
@@ -218,7 +218,7 @@ static int bdev_cxlflash_unmap(struct cxlflash_io_channel *ch, struct spdk_bdev_
     struct cxlflash_bdev_io * bio = (struct cxlflash_bdev_io *)bdev_io->driver_ctx;
     int rc;
     rc = cxlflash_cmdlist_reserve(ch->cmdlist);
-    if (!rc) {
+    if (rc) {
         SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "cmdlist is full\n");
         ++bio->failed_at_request;
         return -1;
