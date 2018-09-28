@@ -114,7 +114,7 @@ static int bdev_cxlflash_readv(struct cxlflash_io_channel *ch, struct spdk_bdev_
 		    rc = cxlflash_aread(ch->qpair, iov[i].iov_base, src_lba, nblocks);
 			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "cxlflash_aread(%p, %p, %ld, %ld): %d, %p\n", ch->qpair, iov[i].iov_base, src_lba, nblocks, rc, bdev_io);
 			if (rc < 0) {
-				return errno;
+				return rc;
 			}
 			cxlflash_cmdlist_add(ch->cmdlist, rc, (uint64_t)bdev_io);
 			src_lba += nblocks * BLK_SIZE;
@@ -158,7 +158,7 @@ static int bdev_cxlflash_writev(struct cxlflash_io_channel *ch, struct spdk_bdev
             rc = cxlflash_awrite(ch->qpair, iov[i].iov_base, dst_lba, nblocks);
 			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "cxlflash_awrite(%p, %p, %ld, %ld): %d, %p\n", ch->qpair, iov[i].iov_base, dst_lba, nblocks, rc, bdev_io);
 			if (spdk_unlikely(rc < 0)) {
-				return errno;
+				return rc;
 			}
 			cxlflash_cmdlist_add(ch->cmdlist, rc, (uint64_t)bdev_io);
 			dst_lba += nblocks * BLK_SIZE;
@@ -179,7 +179,7 @@ static int bdev_cxlflash_unmap(struct cxlflash_io_channel *ch, struct spdk_bdev_
 		cxlflash_cmdlist_add(ch->cmdlist, rc, (uint64_t)bdev_io);
 		return 0;
 	}
-	return errno;
+	return rc;
 }
 
 static bool bdev_cxlflash_io_type_supported(void *ctx, enum spdk_bdev_io_type io_type)
