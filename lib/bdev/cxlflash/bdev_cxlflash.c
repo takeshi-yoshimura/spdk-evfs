@@ -92,7 +92,6 @@ struct cxlflash_bdev_io {
     int nr_wait_cmds;
     int nr_completed;
     int nr_failed;
-    int failed_at_request;
 };
 
 struct cmd_dummy {
@@ -101,8 +100,10 @@ struct cmd_dummy {
 
 struct cxlflash_io_channel {
     struct spdk_poller * poller;
-    cxlflash_multiqpair_t * qpairs;
-    cxlflash_cmdlist_t * cmdlist;
+    cxlflash_multiqpair_t * qpairs_r;
+    cxlflash_multiqpair_t * qpairs_w;
+    cxlflash_cmdlist_t * cmdlist_r;
+    cxlflash_cmdlist_t * cmdlist_w;
 };
 
 static int bdev_cxlflash_destruct(void *ctx) {
@@ -130,24 +131,21 @@ bdev_cxlflash_readv(struct cxlflash_io_channel *ch, struct spdk_bdev_io *bdev_io
         uint64_t nblocks = spdk_min(iov[i].iov_len / BLK_SIZE, remaining_count);
         if (nblocks > 0) {
             int rc;
-            rc = cxlflash_cmdlist_reserve(ch->cmdlist);
+            rc = cxlflash_cmdlist_reserve(ch->cmdlist_r);
             if (rc) {
-                SPDK_ERRLOG("failed: cmdlist is full\n");
-                ++bio->failed_at_request;
                 return -ENOMEM;
             }
-            rc = cxlflash_multiqpair_aread(ch->qpairs, iov[i].iov_base, src_lba, nblocks);
+            rc = cxlflash_multiqpair_aread(ch->qpairs_r, iov[i].iov_base, src_lba, nblocks);
             SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "cxlflash_multiqpair_aread(%p, %p, %ld, %ld): %d, %p\n", ch->qpairs,
                           iov[i].iov_base, src_lba, nblocks, rc, bdev_io);
             if (spdk_unlikely(rc == -EAGAIN || rc == -ENOMEM)) {
                 return -ENOMEM;
             } else if (spdk_unlikely(rc < 0)) {
-                SPDK_ERRLOG("failed: cxlflash_multiqpair_aread(%p, %p, %ld, %ld): %d, %p\n", ch->qpairs,
+                SPDK_ERRLOG("failed: cxlflash_multiqpair_aread(%p, %p, %ld, %ld): %d, %p\n", ch->qpairs_r,
                               iov[i].iov_base, src_lba, nblocks, rc, bdev_io);
-                ++bio->failed_at_request;
                 return -1;
             }
-            cxlflash_cmdlist_setlast(ch->cmdlist, rc, (uint64_t) bdev_io);
+            cxlflash_cmdlist_setlast(ch->cmdlist_r, rc, (uint64_t) bdev_io);
             ++bio->nr_wait_cmds;
             src_lba += nblocks;
             remaining_count -= nblocks;
@@ -191,13 +189,11 @@ static int bdev_cxlflash_writev(struct cxlflash_io_channel *ch, struct spdk_bdev
         uint64_t nblocks = spdk_min(iov[i].iov_len / BLK_SIZE, remaining_count);
         if (nblocks > 0) {
             int rc;
-            rc = cxlflash_cmdlist_reserve(ch->cmdlist);
+            rc = cxlflash_cmdlist_reserve(ch->cmdlist_w);
             if (rc) {
-                SPDK_ERRLOG("cmdlist is full\n");
-                ++bio->failed_at_request;
                 return -ENOMEM;
             }
-            rc = cxlflash_multiqpair_awrite(ch->qpairs, iov[i].iov_base, dst_lba, nblocks);
+            rc = cxlflash_multiqpair_awrite(ch->qpairs_w, iov[i].iov_base, dst_lba, nblocks);
             SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "cxlflash_multiqpair_awrite(%p, %p, %ld, %ld): %d, %p\n", ch->qpairs,
                           iov[i].iov_base, dst_lba, nblocks, rc, bdev_io);
             /**
@@ -206,12 +202,11 @@ static int bdev_cxlflash_writev(struct cxlflash_io_channel *ch, struct spdk_bdev
             if (spdk_unlikely(rc == -EAGAIN || rc == -ENOMEM)) {
                 return -ENOMEM;
             } else if (spdk_unlikely(rc < 0)) {
-                SPDK_ERRLOG("failed: cxlflash_multiqpair_awrite(%p, %p, %ld, %ld): %d, %p\n", ch->qpairs,
+                SPDK_ERRLOG("failed: cxlflash_multiqpair_awrite(%p, %p, %ld, %ld): %d, %p\n", ch->qpairs_w,
                               iov[i].iov_base, dst_lba, nblocks, rc, bdev_io);
-                ++bio->failed_at_request;
                 return -1;
             }
-            cxlflash_cmdlist_setlast(ch->cmdlist, rc, (uint64_t) bdev_io);
+            cxlflash_cmdlist_setlast(ch->cmdlist_w, rc, (uint64_t) bdev_io);
             ++bio->nr_wait_cmds;
             dst_lba += nblocks;
             remaining_count -= nblocks;
@@ -227,15 +222,13 @@ static int bdev_cxlflash_unmap(struct cxlflash_io_channel *ch, struct spdk_bdev_
                                uint64_t lba_count, uint64_t lba) {
     struct cxlflash_bdev_io * bio = (struct cxlflash_bdev_io *)bdev_io->driver_ctx;
     int rc;
-    rc = cxlflash_cmdlist_reserve(ch->cmdlist);
+    rc = cxlflash_cmdlist_reserve(ch->cmdlist_w);
     if (rc) {
-        SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "cmdlist is full\n");
-        ++bio->failed_at_request;
-        return -1;
+        return -ENOMEM;
     }
-    rc = cxlflash_multiqpair_aunmap(ch->qpairs, g_zero_buffer, lba, lba_count);
+    rc = cxlflash_multiqpair_aunmap(ch->qpairs_w, g_zero_buffer, lba, lba_count);
     if (rc >= 0) {
-        cxlflash_cmdlist_setlast(ch->cmdlist, rc, (uint64_t) bdev_io);
+        cxlflash_cmdlist_setlast(ch->cmdlist_w, rc, (uint64_t) bdev_io);
         ++bio->nr_wait_cmds;
         return 0;
     }
@@ -344,26 +337,21 @@ static const struct spdk_bdev_fn_table cxlflash_fn_table = {
 };
 
 
-static int cxlflash_io_poll(void *arg) {
-    struct cxlflash_io_channel *ch = arg;
+static int __cxlflash_io_poll(cxlflash_cmdlist_t * cmdlist, cxlflash_multiqpair_t * qpairs) {
     int c = 0;
 
-    while (cxlflash_cmdlist_size(ch->cmdlist) > 0) {
+    while (cxlflash_cmdlist_size(cmdlist) > 0) {
         int cmd;
         uint64_t data;
-        int rc = cxlflash_multiqpair_io_completion(ch->qpairs, &cmd);
+        int rc = cxlflash_multiqpair_io_completion(qpairs, &cmd);
         if (rc > 0) {
-            rc = cxlflash_cmdlist_remove(ch->cmdlist, cmd, &data);
+            rc = cxlflash_cmdlist_remove(cmdlist, cmd, &data);
             SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "complete: %d, %p, %d\n", cmd, (void *) data, rc);
             if (rc == 0) {
                 struct spdk_bdev_io *bio = (struct spdk_bdev_io *) data;
                 struct cxlflash_bdev_io *cbio = (struct cxlflash_bdev_io *) bio->driver_ctx;
                 ++cbio->nr_completed;
 
-                if (cbio->failed_at_request) {
-                    // we already informed an error to user
-                    continue;
-                }
                 if (cbio->nr_wait_cmds == cbio->nr_completed) {
                     c++;
                     spdk_bdev_io_complete(bio, SPDK_BDEV_IO_STATUS_SUCCESS);
@@ -373,16 +361,12 @@ static int cxlflash_io_poll(void *arg) {
             }
         } else if (rc < 0) {
             SPDK_ERRLOG("completion failed: %d, %p, %d\n", cmd, (void *) data, rc);
-            rc = cxlflash_cmdlist_remove(ch->cmdlist, cmd, &data);
+            rc = cxlflash_cmdlist_remove(cmdlist, cmd, &data);
             if (rc == 0) {
                 struct spdk_bdev_io *bio = (struct spdk_bdev_io *) data;
                 struct cxlflash_bdev_io *cbio = (struct cxlflash_bdev_io *) bio->driver_ctx;
                 ++cbio->nr_failed;
 
-                if (cbio->failed_at_request) {
-                    // we already informed an error to user
-                    continue;
-                }
                 if (cbio->nr_wait_cmds == cbio->nr_completed + cbio->nr_failed) {
                     spdk_bdev_io_complete(bio, SPDK_BDEV_IO_STATUS_FAILED);
                 }
@@ -396,6 +380,12 @@ static int cxlflash_io_poll(void *arg) {
     return c;
 }
 
+
+static int cxlflash_io_poll(void *arg) {
+    struct cxlflash_io_channel *ch = arg;
+    return __cxlflash_io_poll(ch->cmdlist_r, ch->qpairs_r) + __cxlflash_io_poll(ch->cmdlist_w, ch->qpairs_w);
+}
+
 static char *g_devStr;
 static uint64_t g_queue_depth;
 static int g_nr_qpairs;
@@ -403,16 +393,34 @@ static int g_nr_qpairs;
 static int cxlflash_bdev_create_cb(void *io_device, void *ctx_buf) {
     struct cxlflash_io_channel *ch = ctx_buf;
 
-    ch->cmdlist = cxlflash_cmdlist_alloc(g_queue_depth * g_nr_qpairs * 2);
-    if (!ch->cmdlist) {
+    ch->cmdlist_r = cxlflash_cmdlist_alloc(g_queue_depth * g_nr_qpairs * 2);
+    if (!ch->cmdlist_r) {
         spdk_poller_unregister(&ch->poller);
         SPDK_ERRLOG("failed to create cxlflash_cmdlist_alloc(%lu)\n", g_queue_depth * g_nr_qpairs * 2);
         return -1;
     }
 
-    ch->qpairs = cxlflash_multiqpair_open(g_devStr, g_queue_depth, g_nr_qpairs);
-    if (!ch->qpairs) {
-        cxlflash_cmdlist_free(ch->cmdlist);
+    ch->cmdlist_w = cxlflash_cmdlist_alloc(g_queue_depth * g_nr_qpairs * 2);
+    if (!ch->cmdlist_w) {
+        cxlflash_cmdlist_free(ch->cmdlist_r);
+        spdk_poller_unregister(&ch->poller);
+        SPDK_ERRLOG("failed to create cxlflash_cmdlist_alloc(%lu)\n", g_queue_depth * g_nr_qpairs * 2);
+        return -1;
+    }
+
+    ch->qpairs_r = cxlflash_multiqpair_open(g_devStr, g_queue_depth, g_nr_qpairs);
+    if (!ch->qpairs_r) {
+        cxlflash_cmdlist_free(ch->cmdlist_w);
+        cxlflash_cmdlist_free(ch->cmdlist_r);
+        spdk_poller_unregister(&ch->poller);
+        SPDK_ERRLOG("failed to create cxlflash_open(%s, %lu)\n", g_devStr, g_queue_depth);
+        return -1;
+    }
+    ch->qpairs_w = cxlflash_multiqpair_open(g_devStr, g_queue_depth, g_nr_qpairs);
+    if (!ch->qpairs_w) {
+        cxlflash_multiqpair_close(ch->qpairs_w);
+        cxlflash_cmdlist_free(ch->cmdlist_w);
+        cxlflash_cmdlist_free(ch->cmdlist_r);
         spdk_poller_unregister(&ch->poller);
         SPDK_ERRLOG("failed to create cxlflash_open(%s, %lu)\n", g_devStr, g_queue_depth);
         return -1;
@@ -426,8 +434,10 @@ static int cxlflash_bdev_create_cb(void *io_device, void *ctx_buf) {
 static void cxlflash_bdev_destroy_cb(void *io_device, void *ctx_buf) {
     struct cxlflash_io_channel *ch = ctx_buf;
     spdk_poller_unregister(&ch->poller);
-    cxlflash_multiqpair_close(ch->qpairs);
-    cxlflash_cmdlist_free(ch->cmdlist);
+    cxlflash_multiqpair_close(ch->qpairs_w);
+    cxlflash_multiqpair_close(ch->qpairs_r);
+    cxlflash_cmdlist_free(ch->cmdlist_w);
+    cxlflash_cmdlist_free(ch->cmdlist_r);
 }
 
 struct spdk_bdev *create_cxlflash_bdev(char *name, struct spdk_uuid *uuid, char *devStr, int queue_depth, int nr_qpairs) {
