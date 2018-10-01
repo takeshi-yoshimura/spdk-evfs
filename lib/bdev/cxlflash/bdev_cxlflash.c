@@ -403,10 +403,10 @@ static int g_nr_qpairs;
 static int cxlflash_bdev_create_cb(void *io_device, void *ctx_buf) {
     struct cxlflash_io_channel *ch = ctx_buf;
 
-    ch->cmdlist = cxlflash_cmdlist_alloc(g_queue_depth * 2);
+    ch->cmdlist = cxlflash_cmdlist_alloc(g_queue_depth * g_nr_qpairs * 2);
     if (!ch->cmdlist) {
         spdk_poller_unregister(&ch->poller);
-        SPDK_ERRLOG("failed to create cxlflash_cmdlist_alloc(%lu)\n", g_queue_depth * 2);
+        SPDK_ERRLOG("failed to create cxlflash_cmdlist_alloc(%lu)\n", g_queue_depth * g_nr_qpairs * 2);
         return -1;
     }
 
@@ -547,7 +547,11 @@ static int bdev_cxlflash_initialize(void) {
         qdStr = spdk_conf_section_get_nmval(sp, "devConf", i, 1);
         queue_depth = (int) strtol(qdStr, NULL, 10);
         nrQsStr = spdk_conf_section_get_nmval(sp, "devConf", i, 2);
-        nr_qpairs = (int) strtol(nrQsStr, NULL, 10);
+        if (nrQsStr) {
+            nr_qpairs = (int) strtol(nrQsStr, NULL, 10);
+        } else {
+            nr_qpairs = 1;
+        }
         SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "devStr=%s, queueDepth=%d, nrQpairs=%d\n", devStr, queue_depth, nr_qpairs);
 
         bdev = create_cxlflash_bdev(NULL, NULL, devStr, queue_depth, nr_qpairs);
