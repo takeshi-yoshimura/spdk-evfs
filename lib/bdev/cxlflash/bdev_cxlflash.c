@@ -139,7 +139,7 @@ bdev_cxlflash_readv(struct cxlflash_io_channel *ch, struct spdk_bdev_io *bdev_io
             rc = cxlflash_aread(ch->qpair, iov[i].iov_base, src_lba, nblocks);
             SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "cxlflash_aread(%p, %p, %ld, %ld): %d, %p\n", ch->qpair,
                           iov[i].iov_base, src_lba, nblocks, rc, bdev_io);
-            if (spdk_unlikely(rc == -EAGAIN)) {
+            if (spdk_unlikely(rc == -EAGAIN || rc == -ENOMEM)) {
                 return -ENOMEM;
             } else if (spdk_unlikely(rc < 0)) {
                 SPDK_ERRLOG("failed: cxlflash_aread(%p, %p, %ld, %ld): %d, %p\n", ch->qpair,
@@ -203,7 +203,7 @@ static int bdev_cxlflash_writev(struct cxlflash_io_channel *ch, struct spdk_bdev
             /**
              * TODO: we cannot revoke the writen data on disk. how can we fix this?
              * */
-            if (spdk_unlikely(rc == -EAGAIN)) {
+            if (spdk_unlikely(rc == -EAGAIN || rc == -ENOMEM)) {
                 return -ENOMEM;
             } else if (spdk_unlikely(rc < 0)) {
                 SPDK_ERRLOG("failed: cxlflash_awrite(%p, %p, %ld, %ld): %d, %p\n", ch->qpair,
