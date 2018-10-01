@@ -377,6 +377,7 @@ static int cxlflash_io_poll(void *arg) {
                     spdk_bdev_io_complete(bio, SPDK_BDEV_IO_STATUS_FAILED);
                 }
             }
+            abort();
         } else {
             break;
         }
