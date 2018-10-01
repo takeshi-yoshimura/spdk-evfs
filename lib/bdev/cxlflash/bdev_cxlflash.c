@@ -536,7 +536,7 @@ static int bdev_cxlflash_initialize(void) {
 
     i = 0;
     while (true) {
-        char *devStr, *qdStr, nrQsStr;
+        char *devStr, *qdStr, *nrQsStr;
         int queue_depth, nr_qpairs;
         struct spdk_bdev *bdev;
 
