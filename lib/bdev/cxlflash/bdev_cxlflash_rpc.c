@@ -43,6 +43,7 @@ struct rpc_construct_cxlflash {
 	char * uuid;
 	char * devStr;
 	int queue_depth;
+	int nr_qpairs;
 };
 
 static void
@@ -57,6 +58,7 @@ static const struct spdk_json_object_decoder rpc_construct_cxlflash_decoders[] =
 	{"uuid", offsetof(struct rpc_construct_cxlflash, uuid), spdk_json_decode_string, true},
 	{"devStr", offsetof(struct rpc_construct_cxlflash, devStr), spdk_json_decode_string},
 	{"queueDepth", offsetof(struct rpc_construct_cxlflash, queue_depth), spdk_json_decode_int32},
+	{"nrQpairs", offsetof(struct rpc_construct_cxlflash, nr_qpairs), spdk_json_decode_int32},
 };
 
 static void
@@ -83,7 +85,7 @@ spdk_rpc_construct_cxlflash_bdev(struct spdk_jsonrpc_request *request,
 		uuid = &decoded_uuid;
 	}
 
-	bdev = create_cxlflash_bdev(req.name, uuid, req.devStr, req.queue_depth);
+	bdev = create_cxlflash_bdev(req.name, uuid, req.devStr, req.queue_depth, req.nr_qpairs);
 	if (bdev == NULL) {
 		goto invalid;
 	}

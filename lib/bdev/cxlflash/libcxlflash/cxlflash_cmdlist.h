@@ -19,7 +19,7 @@ typedef struct cxlflash_cmdlist {
 cxlflash_cmdlist_t * cxlflash_cmdlist_alloc(uint32_t max_size);
 void cxlflash_cmdlist_free(cxlflash_cmdlist_t * list);
 int cxlflash_cmdlist_reserve(cxlflash_cmdlist_t * list);
-int cxlflash_cmdlist_setlast(cxlflash_cmdlist_t * list, int cmd, uint64_t data);
+void cxlflash_cmdlist_setlast(cxlflash_cmdlist_t * list, int cmd, uint64_t data);
 int cxlflash_cmdlist_remove(cxlflash_cmdlist_t * list, int cmd, uint64_t * data);  // TODO: fix return in param
 int cxlflash_cmdlist_size(cxlflash_cmdlist_t * list);
 

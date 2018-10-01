@@ -165,6 +165,89 @@
 
 #define SCSI_WRITE_SAME_UNMAP_FLAG 0x08;/* byte1 unmap bit in write same CDB */
 
+
+/************************************************************************/
+/* Request (Auto) Sense Data Block                                      */
+/************************************************************************/
+/*
+ *          Error Codes 70h and 71h Fixed Sense Data Format
+ * +=====-======-======-======-======-======-======-======-======+
+ * |  Bit|   7  |   6  |   5  |   4  |   3  |   2  |   1  |   0  |
+ * |Byte |      |      |      |      |      |      |      |      |
+ * |=====+======+================================================|
+ * | 0   | Valid|          Error Code (70h or 71h)               |
+ * |-----+-------------------------------------------------------|
+ * | 1   |                 Segment Number                        |
+ * |-----+-------------------------------------------------------|
+ * | 2   |Filema|  EOM |  ILI |Reserv|     Sense Key             |
+ * |-----+-------------------------------------------------------|
+ * | 3   | (MSB)                                                 |
+ * |- - -+---              Information                        ---|
+ * | 6   |                                                 (LSB) |
+ * |-----+-------------------------------------------------------|
+ * | 7   |                 Additional Sense Length (n-7)         |
+ * |-----+-------------------------------------------------------|
+ * | 8   | (MSB)                                                 |
+ * |- - -+---              Command-Specific Information       ---|
+ * | 11  |                                                 (LSB) |
+ * |-----+-------------------------------------------------------|
+ * | 12  |                 Additional Sense Code                 |
+ * |-----+-------------------------------------------------------|
+ * | 13  |                 Additional Sense Code Qualifier       |
+ * |-----+-------------------------------------------------------|
+ * | 14  |                 Field Replaceable Unit Code           |
+ * |-----+-------------------------------------------------------|
+ * | 15  |  SKSV|                                                |
+ * |- - -+------------     Sense-Key Specific                 ---|
+ * | 17  |                                                       |
+ * |-----+-------------------------------------------------------|
+ * | 18  |                                                       |
+ * |- - -+---              Additional Sense Bytes             ---|
+ * | n   |                                                       |
+ * +=============================================================+
+ *
+ *  Structure for Fixed Sense Data Format
+ */
+
+struct request_sense_data  {
+    uint8_t     err_code;        /* error class and code   */
+    uint8_t     rsvd0;
+    uint8_t     sense_key;
+#define CFLSH_NO_SENSE              0x00
+#define CFLSH_RECOVERED_ERROR       0x01
+#define CFLSH_NOT_READY             0x02
+#define CFLSH_MEDIUM_ERROR          0x03
+#define CFLSH_HARDWARE_ERROR        0x04
+#define CFLSH_ILLEGAL_REQUEST       0x05
+#define CFLSH_UNIT_ATTENTION        0x06
+#define CFLSH_DATA_PROTECT          0x07
+#define CFLSH_BLANK_CHECK           0x08
+#define CFLSH_VENDOR_UNIQUE         0x09
+#define CFLSH_COPY_ABORTED          0x0A
+#define CFLSH_ABORTED_COMMAND       0x0B
+#define CFLSH_EQUAL_CMD             0x0C
+#define CFLSH_VOLUME_OVERFLOW       0x0D
+#define CFLSH_MISCOMPARE            0x0E
+
+    uint8_t     sense_byte0;
+    uint8_t     sense_byte1;
+    uint8_t     sense_byte2;
+    uint8_t     sense_byte3;
+    uint8_t     add_sense_length;
+    uint8_t     add_sense_byte0;
+    uint8_t     add_sense_byte1;
+    uint8_t     add_sense_byte2;
+    uint8_t     add_sense_byte3;
+    uint8_t     add_sense_key;
+    uint8_t     add_sense_qualifier;
+    uint8_t     fru;
+    uint8_t     flag_byte;
+    uint8_t     field_ptrM;
+    uint8_t     field_ptrL;
+};
+
+
+
 typedef struct cxlflash_iocmd_s {
     sisl_iocmd_t core;
     int id;

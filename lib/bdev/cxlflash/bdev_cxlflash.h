@@ -40,7 +40,7 @@
 
 typedef void (*spdk_delete_cxlflash_complete)(void *cb_arg, int bdeverrno);
 
-struct spdk_bdev *create_cxlflash_bdev(char * name, struct spdk_uuid * uuid, char * devStr, int queue_depth);
+struct spdk_bdev *create_cxlflash_bdev(char * name, struct spdk_uuid * uuid, char * devStr, int queue_depth, int nr_qpairs);
 
 void delete_bdev_cxlflash(struct spdk_bdev *bdev, spdk_delete_cxlflash_complete cb_fn, void *cb_arg);
 
