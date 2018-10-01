@@ -393,18 +393,18 @@ static int g_nr_qpairs;
 static int cxlflash_bdev_create_cb(void *io_device, void *ctx_buf) {
     struct cxlflash_io_channel *ch = ctx_buf;
 
-    ch->cmdlist_r = cxlflash_cmdlist_alloc(g_queue_depth * g_nr_qpairs * 2);
+    ch->cmdlist_r = cxlflash_cmdlist_alloc(g_queue_depth * g_nr_qpairs);
     if (!ch->cmdlist_r) {
         spdk_poller_unregister(&ch->poller);
-        SPDK_ERRLOG("failed to create cxlflash_cmdlist_alloc(%lu)\n", g_queue_depth * g_nr_qpairs * 2);
+        SPDK_ERRLOG("failed to create cxlflash_cmdlist_alloc(%lu)\n", g_queue_depth * g_nr_qpairs);
         return -1;
     }
 
-    ch->cmdlist_w = cxlflash_cmdlist_alloc(g_queue_depth * g_nr_qpairs * 2);
+    ch->cmdlist_w = cxlflash_cmdlist_alloc(g_queue_depth * g_nr_qpairs);
     if (!ch->cmdlist_w) {
         cxlflash_cmdlist_free(ch->cmdlist_r);
         spdk_poller_unregister(&ch->poller);
-        SPDK_ERRLOG("failed to create cxlflash_cmdlist_alloc(%lu)\n", g_queue_depth * g_nr_qpairs * 2);
+        SPDK_ERRLOG("failed to create cxlflash_cmdlist_alloc(%lu)\n", g_queue_depth * g_nr_qpairs);
         return -1;
     }
 
