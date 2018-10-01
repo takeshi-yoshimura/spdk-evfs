@@ -402,10 +402,10 @@ static uint64_t g_queue_depth;
 static int cxlflash_bdev_create_cb(void *io_device, void *ctx_buf) {
     struct cxlflash_io_channel *ch = ctx_buf;
 
-    ch->cmdlist = cxlflash_cmdlist_alloc(g_queue_depth);
+    ch->cmdlist = cxlflash_cmdlist_alloc(g_queue_depth * 2);
     if (!ch->cmdlist) {
         spdk_poller_unregister(&ch->poller);
-        SPDK_ERRLOG("failed to create cxlflash_cmdlist_alloc(%lu)\n", g_queue_depth);
+        SPDK_ERRLOG("failed to create cxlflash_cmdlist_alloc(%lu)\n", g_queue_depth * 2);
         return -1;
     }
 
