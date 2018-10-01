@@ -145,7 +145,7 @@ bdev_cxlflash_readv(struct cxlflash_io_channel *ch, struct spdk_bdev_io *bdev_io
             }
             cxlflash_cmdlist_setlast(ch->cmdlist, rc, (uint64_t) bdev_io);
             ++bio->nr_wait_cmds;
-            src_lba += nblocks * BLK_SIZE;
+            src_lba += nblocks;
             remaining_count -= nblocks;
         }
     }
@@ -161,7 +161,7 @@ static void bdev_cxlflash_get_buf_cb(struct spdk_io_channel *_ch, struct spdk_bd
                               bdev_io->u.bdev.iovs,
                               bdev_io->u.bdev.iovcnt,
                               bdev_io->u.bdev.num_blocks,
-                              bdev_io->u.bdev.offset_blocks * bdev_io->bdev->blocklen);
+                              bdev_io->u.bdev.offset_blocks);
 
     if (spdk_likely(ret == 0)) {
         return;
@@ -203,7 +203,7 @@ static int bdev_cxlflash_writev(struct cxlflash_io_channel *ch, struct spdk_bdev
             }
             cxlflash_cmdlist_setlast(ch->cmdlist, rc, (uint64_t) bdev_io);
             ++bio->nr_wait_cmds;
-            dst_lba += nblocks * BLK_SIZE;
+            dst_lba += nblocks;
             remaining_count -= nblocks;
         }
     }
@@ -264,8 +264,8 @@ static int _bdev_cxlflash_submit_request(struct spdk_io_channel *_ch, struct spd
                                         bdev_io,
                                         bdev_io->u.bdev.iovs,
                                         bdev_io->u.bdev.iovcnt,
-                                        bdev_io->u.bdev.num_blocks * block_size,
-                                        bdev_io->u.bdev.offset_blocks * block_size);
+                                        bdev_io->u.bdev.num_blocks,
+                                        bdev_io->u.bdev.offset_blocks);
 
         case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
             if (!bdev->unmap_supported) {
@@ -273,14 +273,14 @@ static int _bdev_cxlflash_submit_request(struct spdk_io_channel *_ch, struct spd
                                             bdev_io,
                                             bdev_io->u.bdev.iovs,
                                             bdev_io->u.bdev.iovcnt,
-                                            bdev_io->u.bdev.num_blocks * block_size,
-                                            bdev_io->u.bdev.offset_blocks * block_size);
+                                            bdev_io->u.bdev.num_blocks,
+                                            bdev_io->u.bdev.offset_blocks);
             }
             // fall through
 
         case SPDK_BDEV_IO_TYPE_UNMAP:
-            return bdev_cxlflash_unmap(ch, bdev_io, bdev_io->u.bdev.num_blocks * block_size,
-                                       bdev_io->u.bdev.offset_blocks * block_size);
+            return bdev_cxlflash_unmap(ch, bdev_io, bdev_io->u.bdev.num_blocks,
+                                       bdev_io->u.bdev.offset_blocks);
 
         case SPDK_BDEV_IO_TYPE_FLUSH:
             return 0;
