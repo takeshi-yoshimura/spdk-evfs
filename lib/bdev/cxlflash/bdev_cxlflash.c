@@ -132,14 +132,18 @@ bdev_cxlflash_readv(struct cxlflash_io_channel *ch, struct spdk_bdev_io *bdev_io
             int rc;
             rc = cxlflash_cmdlist_reserve(ch->cmdlist);
             if (rc) {
-                SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "cmdlist is full\n");
+                SPDK_ERRLOG("failed: cmdlist is full\n");
                 ++bio->failed_at_request;
-                return -1;
+                return -ENOMEM;
             }
             rc = cxlflash_aread(ch->qpair, iov[i].iov_base, src_lba, nblocks);
             SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "cxlflash_aread(%p, %p, %ld, %ld): %d, %p\n", ch->qpair,
                           iov[i].iov_base, src_lba, nblocks, rc, bdev_io);
-            if (spdk_unlikely(rc < 0)) {
+            if (spdk_unlikely(rc == -EAGAIN)) {
+                return -ENOMEM;
+            } else if (spdk_unlikely(rc < 0)) {
+                SPDK_ERRLOG("failed: cxlflash_aread(%p, %p, %ld, %ld): %d, %p\n", ch->qpair,
+                              iov[i].iov_base, src_lba, nblocks, rc, bdev_io);
                 ++bio->failed_at_request;
                 return -1;
             }
@@ -165,6 +169,8 @@ static void bdev_cxlflash_get_buf_cb(struct spdk_io_channel *_ch, struct spdk_bd
 
     if (spdk_likely(ret == 0)) {
         return;
+    } else if (ret == -ENOMEM) {
+        spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_NOMEM);
     } else {
         spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
     }
@@ -187,17 +193,21 @@ static int bdev_cxlflash_writev(struct cxlflash_io_channel *ch, struct spdk_bdev
             int rc;
             rc = cxlflash_cmdlist_reserve(ch->cmdlist);
             if (rc) {
-                SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "cmdlist is full\n");
+                SPDK_ERRLOG("cmdlist is full\n");
                 ++bio->failed_at_request;
-                return -1;
+                return -ENOMEM;
             }
             rc = cxlflash_awrite(ch->qpair, iov[i].iov_base, dst_lba, nblocks);
             SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "cxlflash_awrite(%p, %p, %ld, %ld): %d, %p\n", ch->qpair,
                           iov[i].iov_base, dst_lba, nblocks, rc, bdev_io);
-            if (spdk_unlikely(rc < 0)) {
-                /**
-                 * TODO: we cannot revoke the writen data on disk. how can we fix this?
-                 * */
+            /**
+             * TODO: we cannot revoke the writen data on disk. how can we fix this?
+             * */
+            if (spdk_unlikely(rc == -EAGAIN)) {
+                return -ENOMEM;
+            } else if (spdk_unlikely(rc < 0)) {
+                SPDK_ERRLOG("failed: cxlflash_awrite(%p, %p, %ld, %ld): %d, %p\n", ch->qpair,
+                              iov[i].iov_base, dst_lba, nblocks, rc, bdev_io);
                 ++bio->failed_at_request;
                 return -1;
             }
@@ -362,7 +372,7 @@ static int cxlflash_io_poll(void *arg) {
                 }
             }
         } else if (rc < 0) {
-            SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "failed: %d, %p, %d\n", cmd, (void *) data, rc);
+            SPDK_ERRLOG("completion failed: %d, %p, %d\n", cmd, (void *) data, rc);
             rc = cxlflash_cmdlist_remove(ch->cmdlist, cmd, &data);
             if (rc == 0) {
                 struct spdk_bdev_io *bio = (struct spdk_bdev_io *) data;
