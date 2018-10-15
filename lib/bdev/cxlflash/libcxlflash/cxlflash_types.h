@@ -1,6 +1,7 @@
 #ifndef LIBCXLFLASH_TYPES_H
 #define LIBCXLFLASH_TYPES_H
 
+#include <sys/types.h>
 #include <stdint.h>
 typedef uint8_t __u8;
 typedef uint16_t __u16;

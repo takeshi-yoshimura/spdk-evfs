@@ -14,5 +14,6 @@ void cxlflash_mempool_free(cxlflash_mempool_t * pool);
 void * cxlflash_mempool_get(cxlflash_mempool_t * pool);
 void cxlflash_mempool_put(cxlflash_mempool_t * pool, void *data);
 int cxlflash_mempool_index(cxlflash_mempool_t * pool, void *data);
+int cxlflash_mempool_empty(cxlflash_mempool_t * pool);
 
 #endif //LIBCXLFLASH_TLDP_H
