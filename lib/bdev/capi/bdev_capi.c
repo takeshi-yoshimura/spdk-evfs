@@ -116,10 +116,10 @@ static int bdev_capi_readv(struct capi_bdev *bdev, struct capi_bdev_io *bio,
 		if (nblocks > 0) {
 			rc = cblk_aread(bdev->chunk_id, iov[i].iov_base, src_lba, nblocks, &bio->tag, 0, 0);
 			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_aread(%d, %p, %ld, %ld, %d, 0, 0)\n", bdev->chunk_id, iov[i].iov_base, src_lba, nblocks, bio->tag);
-			if (rc < 0) {
-				return errno;
+			if (rc == -EAGAIN || rc == -ENOMEM) {
+				return -ENOMEM;
 			}
-			src_lba += nblocks * BLK_SIZE;
+			src_lba += nblocks;
 			remaining_count -= nblocks;
 		}
 	}
@@ -164,10 +164,10 @@ static int bdev_capi_writev(struct capi_bdev *bdev, struct capi_io_channel *ch, 
 		if (nblocks > 0) {
 			rc = cblk_awrite(bdev->chunk_id, iov[i].iov_base, dst_lba, nblocks, &bio->tag, 0, 0);
 			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_awrite(%d, %p, %ld, %ld, %d, 0, 0)\n", bdev->chunk_id, iov[i].iov_base, dst_lba, nblocks, bio->tag);
-			if (spdk_unlikely(rc < 0)) {
-				return errno;
+			if (spdk_unlikely(rc == -EAGAIN || rc == -ENOMEM)) {
+				return -ENOMEM;
 			}
-			dst_lba += nblocks * BLK_SIZE;
+			dst_lba += nblocks;
 			remaining_count -= nblocks;
 		}
 	}

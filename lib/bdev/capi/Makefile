@@ -36,7 +36,12 @@ include $(SPDK_ROOT_DIR)/mk/spdk.common.mk
 
 CAPI_DIR := $(abspath $(CONFIG_CAPI_DIR))
 
+ifeq ($(CONFIG_CXLFLASH_COMPAT),y)
+CXLFLASH_DIR := $(abspath $(CONFIG_CXLFLASH_DIR))
+CFLAGS += -I$(CAPI_DIR)/include -L$(CXLFLASH_DIR)/lib -lcxlflash_compat
+else
 CFLAGS += -I$(CAPI_DIR)/include -L$(CAPI_DIR)/lib64 -lcflsh_block-0
+endif
 
 C_SRCS = bdev_capi.c bdev_capi_rpc.c
 LIBNAME = bdev_capi

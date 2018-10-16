@@ -726,6 +726,7 @@ nvme_ctrlr_create_bdev(struct nvme_ctrlr *nvme_ctrlr, uint32_t nsid)
 	if (cdata->vwc.present) {
 		/* Enable if the Volatile Write Cache exists */
 		bdev->disk.write_cache = 1;
+		spdk_nvme_ctrlr_cmd_set_feature(ctrlr, SPDK_NVME_FEAT_VOLATILE_WRITE_CACHE, 0, 0, NULL, 0, NULL, NULL);
 	}
 	bdev->disk.blocklen = spdk_nvme_ns_get_extended_sector_size(ns);
 	bdev->disk.blockcnt = spdk_nvme_ns_get_num_sectors(ns);
