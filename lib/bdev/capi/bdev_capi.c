@@ -137,7 +137,7 @@ static void bdev_capi_get_buf_cb(struct spdk_io_channel *_ch, struct spdk_bdev_i
 			  bdev_io->u.bdev.iovs,
 			  bdev_io->u.bdev.iovcnt,
 			  bdev_io->u.bdev.num_blocks,
-			  bdev_io->u.bdev.offset_blocks * bdev_io->bdev->blocklen);
+			  bdev_io->u.bdev.offset_blocks);
 
 	if (spdk_likely(ret == 0)) {
 		TAILQ_INSERT_TAIL(&ch->io, bdev_io, module_link);
