@@ -227,8 +227,8 @@ static int _bdev_capi_submit_request(struct spdk_io_channel *_ch, struct spdk_bd
 				   bio,
 				   bdev_io->u.bdev.iovs,
 				   bdev_io->u.bdev.iovcnt,
-				   bdev_io->u.bdev.num_blocks * block_size,
-				   bdev_io->u.bdev.offset_blocks * block_size);
+				   bdev_io->u.bdev.num_blocks,
+				   bdev_io->u.bdev.offset_blocks);
 
     case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
         if (!bdev->unmap_supported) {
@@ -238,14 +238,14 @@ static int _bdev_capi_submit_request(struct spdk_io_channel *_ch, struct spdk_bd
                     bio,
                     bdev_io->u.bdev.iovs,
                     bdev_io->u.bdev.iovcnt,
-                    bdev_io->u.bdev.num_blocks * block_size,
-                    bdev_io->u.bdev.offset_blocks * block_size);
+                    bdev_io->u.bdev.num_blocks,
+                    bdev_io->u.bdev.offset_blocks);
         }
         // fall through
 
     case SPDK_BDEV_IO_TYPE_UNMAP:
-        return bdev_capi_unmap(bdev, ch, bdev_io, bio, bdev_io->u.bdev.num_blocks * block_size,
-                                bdev_io->u.bdev.offset_blocks * block_size);
+        return bdev_capi_unmap(bdev, ch, bdev_io, bio, bdev_io->u.bdev.num_blocks,
+                                bdev_io->u.bdev.offset_blocks);
 
 	case SPDK_BDEV_IO_TYPE_FLUSH:
         return 0;
