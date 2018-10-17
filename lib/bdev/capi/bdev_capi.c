@@ -313,7 +313,7 @@ static int capi_io_poll(void *arg)
 	for (bdev_io = TAILQ_FIRST(&ch->io); bdev_io; bdev_io = next) {
 		struct capi_bdev * bdev = (struct capi_bdev *)bdev_io->bdev->ctxt;
 		struct capi_bdev_io *bio = (struct capi_bdev_io *)bdev_io->driver_ctx;
-		next = TAILQ_NEXT(&ch->io, module_link);
+		next = TAILQ_NEXT(bdev_io, module_link);
 
 		rc = cblk_aresult(bdev->chunk_id, &bio->tag, &status, pflag);
 		if (rc > 0) {
