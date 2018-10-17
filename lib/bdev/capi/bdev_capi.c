@@ -320,11 +320,11 @@ static int capi_io_poll(void *arg)
 			c++;
 			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_aresult(%d, %d, status, %d)=SUCCESS\n", bdev->chunk_id, bio->tag, pflag);
 			spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_SUCCESS);
-			TAILQ_REMOVE(&io, bdev_io, module_link);
+			TAILQ_REMOVE(&ch->io, bdev_io, module_link);
 		} else if (rc < 0) {
 			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_aresult(%d, %d, status, %d)=FAIL\n", bdev->chunk_id, bio->tag, pflag);
 			spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
-			TAILQ_REMOVE(&io, bdev_io, module_link);
+			TAILQ_REMOVE(&ch->io, bdev_io, module_link);
 		}
 		if (pflag == 0) {
 		    pflag = CBLK_ARESULT_NO_HARVEST;
