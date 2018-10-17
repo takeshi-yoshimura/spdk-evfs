@@ -332,7 +332,9 @@ static int capi_io_poll(void *arg)
 		}
 	}
 
-	TAILQ_FOREACH(bdev_io, &io, module_link) {
+	while (!TAILQ_EMPTY(&io)) {
+		bdev_io = TAILQ_FIRST(&io);
+		TAILQ_REMOVE(&io, bdev_io, module_link);
 		TAILQ_REMOVE(&ch->io, bdev_io, module_link);
 	}
 	return c;
