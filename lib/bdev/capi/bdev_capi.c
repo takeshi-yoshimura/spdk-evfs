@@ -116,7 +116,7 @@ static int bdev_capi_readv(struct capi_bdev *bdev, struct capi_bdev_io *bio,
 		if (nblocks > 0) {
 			rc = cblk_aread(bdev->chunk_id, iov[i].iov_base, src_lba, nblocks, &bio->tag, 0, 0);
 			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_aread(%d, %p, %ld, %ld, %d, 0, 0)\n", bdev->chunk_id, iov[i].iov_base, src_lba, nblocks, bio->tag);
-			if (rc == -EAGAIN || rc == -ENOMEM) {
+			if (spdk_unlikely(rc < 0)) {
 				return -ENOMEM;
 			}
 			src_lba += nblocks;
@@ -164,7 +164,7 @@ static int bdev_capi_writev(struct capi_bdev *bdev, struct capi_io_channel *ch, 
 		if (nblocks > 0) {
 			rc = cblk_awrite(bdev->chunk_id, iov[i].iov_base, dst_lba, nblocks, &bio->tag, 0, 0);
 			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_awrite(%d, %p, %ld, %ld, %d, 0, 0)\n", bdev->chunk_id, iov[i].iov_base, dst_lba, nblocks, bio->tag);
-			if (spdk_unlikely(rc == -EAGAIN || rc == -ENOMEM)) {
+			if (spdk_unlikely(rc < 0)) {
 				return -ENOMEM;
 			}
 			dst_lba += nblocks;
@@ -310,7 +310,7 @@ static int capi_io_poll(void *arg)
 	struct spdk_bdev_io * bdev_io, * next;
 	int pflag = 0;
 
-	for (bdev_io = TAILQ_FIRST(&ch->io); bdev_io; bdev_io = next) {
+	for (bdev_io = TAILQ_FIRST(&ch->io); bdev_io != NULL; bdev_io = next) {
 		struct capi_bdev * bdev = (struct capi_bdev *)bdev_io->bdev->ctxt;
 		struct capi_bdev_io *bio = (struct capi_bdev_io *)bdev_io->driver_ctx;
 		next = TAILQ_NEXT(bdev_io, module_link);
@@ -319,12 +319,12 @@ static int capi_io_poll(void *arg)
 		if (rc > 0) {
 			c++;
 			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_aresult(%d, %d, status, %d)=SUCCESS\n", bdev->chunk_id, bio->tag, pflag);
-			spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_SUCCESS);
 			TAILQ_REMOVE(&ch->io, bdev_io, module_link);
+			spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_SUCCESS);
 		} else if (rc < 0) {
 			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_aresult(%d, %d, status, %d)=FAIL\n", bdev->chunk_id, bio->tag, pflag);
-			spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
 			TAILQ_REMOVE(&ch->io, bdev_io, module_link);
+			spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
 		}
 		if (pflag == 0) {
 		    pflag = CBLK_ARESULT_NO_HARVEST;

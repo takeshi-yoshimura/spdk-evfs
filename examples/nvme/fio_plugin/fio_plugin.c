@@ -60,6 +60,7 @@ struct spdk_fio_options {
 	char	*hostnqn;
 	int	pi_act;
 	char	*pi_chk;
+	bool mem_single_seg;
 };
 
 struct spdk_fio_request {
@@ -375,6 +376,7 @@ static int spdk_fio_setup(struct thread_data *td)
 		opts.name = "fio";
 		opts.mem_size = fio_options->mem_size;
 		opts.shm_id = fio_options->shm_id;
+		opts.hugepage_single_segments = fio_options->mem_single_seg;
 		spdk_enable_sgl = fio_options->enable_sgl;
 		spdk_pract_flag = fio_options->pi_act;
 		parse_prchk_flags(fio_options->pi_chk);
@@ -901,6 +903,15 @@ static struct fio_option options[] = {
 		.help		= "Control of Protection Information Checking (pi_chk=GUARD|REFTAG|APPTAG)",
 		.category	= FIO_OPT_C_ENGINE,
 		.group		= FIO_OPT_G_INVALID,
+	},
+	{
+			.name		= "spdk_single_seg",
+			.lname		= "SPDK switch to create just a single hugetlbfs file",
+			.type		= FIO_OPT_BOOL,
+			.off1		= offsetof(struct spdk_fio_options, mem_single_seg),
+			.help		= "If set to 1, SPDK will use just a single hugetlbfs file",
+			.category	= FIO_OPT_C_ENGINE,
+			.group		= FIO_OPT_G_INVALID,
 	},
 	{
 		.name		= NULL,
