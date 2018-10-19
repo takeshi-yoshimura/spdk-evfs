@@ -410,7 +410,7 @@ static int cxlflash_bdev_create_cb(void *io_device, void *ctx_buf) {
     }
     ch->poller = spdk_poller_register(cxlflash_io_poll, ch, 0);
 
-    SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "create qpair: %p\n", ch->qpair);
+    SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "create qpair: %p\n", ch->qpairs);
     return 0;
 }
 
