@@ -257,16 +257,6 @@ null_io_poll(void *arg)
 		}
 		set = 0;
 	}
-	if (num2 > 0) {
-		elapsed += (t3.tv_sec - t2.tv_sec) * 1000 * 1000 * 1000 + (t3.tv_nsec - t2.tv_nsec);
-	}
-	++num2;
-	t2 = t3;
-	if (num2 > 1000000) {
-		SPDK_ERRLOG("avg time2: %f\n", elapsed2 / num2);
-		num2 = 0;
-		elapsed2 = 0;
-	}
 
 	TAILQ_INIT(&io);
 	TAILQ_SWAP(&ch->io, &io, spdk_bdev_io, module_link);
