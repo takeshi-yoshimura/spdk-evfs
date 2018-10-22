@@ -44,6 +44,7 @@ struct rpc_construct_cxlflash {
 	char * devStr;
 	int queue_depth;
 	int nr_qpairs;
+	int timeout_nsec;
 };
 
 static void
@@ -59,6 +60,7 @@ static const struct spdk_json_object_decoder rpc_construct_cxlflash_decoders[] =
 	{"devStr", offsetof(struct rpc_construct_cxlflash, devStr), spdk_json_decode_string},
 	{"queueDepth", offsetof(struct rpc_construct_cxlflash, queue_depth), spdk_json_decode_int32},
 	{"nrQpairs", offsetof(struct rpc_construct_cxlflash, nr_qpairs), spdk_json_decode_int32},
+	{"timeoutNsec", offsetof(struct rpc_construct_cxlflash, timeout_nsec), spdk_json_decode_int32},
 };
 
 static void
@@ -85,7 +87,7 @@ spdk_rpc_construct_cxlflash_bdev(struct spdk_jsonrpc_request *request,
 		uuid = &decoded_uuid;
 	}
 
-	bdev = create_cxlflash_bdev(req.name, uuid, req.devStr, req.queue_depth, req.nr_qpairs);
+	bdev = create_cxlflash_bdev(req.name, uuid, req.devStr, req.queue_depth, req.nr_qpairs, req.timeout_nsec);
 	if (bdev == NULL) {
 		goto invalid;
 	}

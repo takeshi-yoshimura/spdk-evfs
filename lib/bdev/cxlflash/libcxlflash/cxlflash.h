@@ -11,9 +11,9 @@ typedef struct cxlflash_qpair {
 
 cxlflash_qpair_t * cxlflash_open(char *path, int queue_depth);
 void cxlflash_close(cxlflash_qpair_t * qpair);
-int cxlflash_aread(cxlflash_qpair_t * qpair, void * buf, uint64_t lba, uint64_t nblocks);
-int cxlflash_awrite(cxlflash_qpair_t * qpair, void * buf, uint64_t lba, uint64_t nblocks);
-int cxlflash_aunmap(cxlflash_qpair_t * qpair, void * buf, uint64_t lba, uint64_t nblocks);
+int cxlflash_aread(cxlflash_qpair_t * qpair, void * buf, uint64_t lba, uint64_t nblocks, long timeout_nsec);
+int cxlflash_awrite(cxlflash_qpair_t * qpair, void * buf, uint64_t lba, uint64_t nblocks, long timeout_nsec);
+int cxlflash_aunmap(cxlflash_qpair_t * qpair, void * buf, uint64_t lba, uint64_t nblocks, long timeout_nsec);
 int cxlflash_io_completion(cxlflash_qpair_t * qpair, int * ret); // TODO: fix return in param
 uint64_t cxlflash_get_last_lba(cxlflash_qpair_t * qpair);
 int cxlflash_is_mmapable(cxlflash_qpair_t * qpair);

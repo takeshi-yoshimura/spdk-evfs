@@ -27,9 +27,9 @@ typedef struct sisl_qpair {
 sisl_qpair_t * cxlflash_qpair_alloc(struct dk_cxlflash_attach * attached, struct dk_cxlflash_udirect * udirect, uint64_t queue_depth);
 void cxlflash_qpair_free(sisl_qpair_t * qpair);
 int cxlflash_qpair_try_get_cmd_room(sisl_qpair_t * qpair);
-int cxlflash_qpair_submit_cmd_nosq(sisl_qpair_t * qpair, void * buf, uint64_t lba, uint32_t nblocks, int op_code);
-int cxlflash_qpair_submit_cmd_sq(sisl_qpair_t * qpair, void * buf, uint64_t lba, uint32_t nblocks, int op_code);
-int cxlflash_qpair_submit_cmd(sisl_qpair_t * qpair, void * buf, uint64_t lba, uint32_t nblocks, int op_code);
+int cxlflash_qpair_submit_cmd_nosq(sisl_qpair_t * qpair, void * buf, uint64_t lba, uint32_t nblocks, int op_code, long timeout_nsec);
+int cxlflash_qpair_submit_cmd_sq(sisl_qpair_t * qpair, void * buf, uint64_t lba, uint32_t nblocks, int op_code, long timeout_nsec);
+int cxlflash_qpair_submit_cmd(sisl_qpair_t * qpair, void * buf, uint64_t lba, uint32_t nblocks, int op_code, long timeout_nsec);
 int cxlflash_qpair_get_complete_cmd(sisl_qpair_t * qpair, int *ret); // TODO: fix return in param
 
 #endif //LIBCXLFLASH_CXLFLASH_QPAIR_H

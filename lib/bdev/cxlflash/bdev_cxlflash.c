@@ -82,6 +82,7 @@ struct cxlflash_bdev {
     int queue_depth;
     int nr_qpairs;
     bool unmap_supported;
+    long timeout_nsec;
     TAILQ_ENTRY(cxlflash_bdev) link;
 };
 
@@ -103,6 +104,7 @@ struct cxlflash_io_channel {
     struct spdk_poller * poller;
     cxlflash_multiqpair_t * qpairs;
     cxlflash_cmdlist_t * cmdlist;
+    long timeout_nsec;
 };
 
 static int bdev_cxlflash_destruct(void *ctx) {
@@ -134,15 +136,15 @@ bdev_cxlflash_readv(struct cxlflash_io_channel *ch, struct spdk_bdev_io *bdev_io
             if (rc) {
                 return -ENOMEM;
             }
-            rc = cxlflash_multiqpair_aread(ch->qpairs, iov[i].iov_base, src_lba, nblocks);
-            SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "cxlflash_multiqpair_aread(%p, %p, %ld, %ld): %d, %p\n", ch->qpairs,
-                          iov[i].iov_base, src_lba, nblocks, rc, bdev_io);
+            rc = cxlflash_multiqpair_aread(ch->qpairs, iov[i].iov_base, src_lba, nblocks, ch->timeout_nsec);
+            SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "cxlflash_multiqpair_aread(%p, %p, %ld, %ld, %ld): %d, %p\n", ch->qpairs,
+                          iov[i].iov_base, src_lba, nblocks, ch->timeout_nsec, rc, bdev_io);
             if (spdk_unlikely(rc == -EAGAIN || rc == -ENOMEM)) {
                 cxlflash_cmdlist_revoke_reserve(ch->cmdlist);
                 return -ENOMEM;
             } else if (spdk_unlikely(rc < 0)) {
-                SPDK_ERRLOG("failed: cxlflash_multiqpair_aread(%p, %p, %ld, %ld): %d, %p\n", ch->qpairs,
-                              iov[i].iov_base, src_lba, nblocks, rc, bdev_io);
+                SPDK_ERRLOG("failed: cxlflash_multiqpair_aread(%p, %p, %ld, %ld, %ld): %d, %p\n", ch->qpairs,
+                              iov[i].iov_base, src_lba, nblocks, ch->timeout_nsec, rc, bdev_io);
                 cxlflash_cmdlist_revoke_reserve(ch->cmdlist);
                 return -1;
             }
@@ -194,9 +196,9 @@ static int bdev_cxlflash_writev(struct cxlflash_io_channel *ch, struct spdk_bdev
             if (rc) {
                 return -ENOMEM;
             }
-            rc = cxlflash_multiqpair_awrite(ch->qpairs, iov[i].iov_base, dst_lba, nblocks);
-            SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "cxlflash_multiqpair_awrite(%p, %p, %ld, %ld): %d, %p\n", ch->qpairs,
-                          iov[i].iov_base, dst_lba, nblocks, rc, bdev_io);
+            rc = cxlflash_multiqpair_awrite(ch->qpairs, iov[i].iov_base, dst_lba, nblocks, ch->timeout_nsec);
+            SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "cxlflash_multiqpair_awrite(%p, %p, %ld, %ld, %ld): %d, %p\n", ch->qpairs,
+                          iov[i].iov_base, dst_lba, nblocks, ch->timeout_nsec, rc, bdev_io);
             /**
              * TODO: we cannot revoke the writen data on disk. how can we fix this?
              * */
@@ -204,8 +206,8 @@ static int bdev_cxlflash_writev(struct cxlflash_io_channel *ch, struct spdk_bdev
                 cxlflash_cmdlist_revoke_reserve(ch->cmdlist);
                 return -ENOMEM;
             } else if (spdk_unlikely(rc < 0)) {
-                SPDK_ERRLOG("failed: cxlflash_multiqpair_awrite(%p, %p, %ld, %ld): %d, %p\n", ch->qpairs,
-                              iov[i].iov_base, dst_lba, nblocks, rc, bdev_io);
+                SPDK_ERRLOG("failed: cxlflash_multiqpair_awrite(%p, %p, %ld, %ld, %ld): %d, %p\n", ch->qpairs,
+                              iov[i].iov_base, dst_lba, nblocks, ch->timeout_nsec, rc, bdev_io);
                 cxlflash_cmdlist_revoke_reserve(ch->cmdlist);
                 return -1;
             }
@@ -229,7 +231,7 @@ static int bdev_cxlflash_unmap(struct cxlflash_io_channel *ch, struct spdk_bdev_
     if (rc) {
         return -ENOMEM;
     }
-    rc = cxlflash_multiqpair_aunmap(ch->qpairs, g_zero_buffer, lba, lba_count);
+    rc = cxlflash_multiqpair_aunmap(ch->qpairs, g_zero_buffer, lba, lba_count, ch->timeout_nsec);
     if (rc >= 0) {
         cxlflash_cmdlist_setlast(ch->cmdlist, rc, (uint64_t) bdev_io);
         ++bio->nr_wait_cmds;
@@ -342,7 +344,6 @@ static const struct spdk_bdev_fn_table cxlflash_fn_table = {
 
 static int __cxlflash_io_poll(cxlflash_cmdlist_t * cmdlist, cxlflash_multiqpair_t * qpairs) {
     int c = 0;
-
     while (cxlflash_cmdlist_size(cmdlist) > 0) {
         int cmd;
         uint64_t data;
@@ -407,6 +408,7 @@ static int cxlflash_bdev_create_cb(void * io_device, void *ctx_buf) {
         return -1;
     }
     ch->poller = spdk_poller_register(cxlflash_io_poll, ch, 0);
+    ch->timeout_nsec = bdev->timeout_nsec;
 
     SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "create qpair: %p\n", ch->qpairs);
     return 0;
@@ -419,7 +421,7 @@ static void cxlflash_bdev_destroy_cb(void *io_device, void *ctx_buf) {
     cxlflash_cmdlist_free(ch->cmdlist);
 }
 
-struct spdk_bdev *create_cxlflash_bdev(char *name, struct spdk_uuid *uuid, char *devStr, int queue_depth, int nr_qpairs) {
+struct spdk_bdev *create_cxlflash_bdev(char *name, struct spdk_uuid *uuid, char *devStr, int queue_depth, int nr_qpairs, long timeout_nsec) {
     struct cxlflash_bdev *bdev;
     int rc;
     size_t lun_size;
@@ -453,6 +455,7 @@ struct spdk_bdev *create_cxlflash_bdev(char *name, struct spdk_uuid *uuid, char 
 
     lun_size = cxlflash_get_last_lba(qpair);
 
+    bdev->timeout_nsec = timeout_nsec;
     bdev->devStr = devStr;
     bdev->nr_qpairs = nr_qpairs;
     bdev->disk.product_name = "cxlflash";
@@ -523,9 +526,10 @@ static int bdev_cxlflash_initialize(void) {
 
     i = 0;
     while (true) {
-        char *devStr, *qdStr, *nrQsStr;
+        char *devStr, *qdStr, *nrQsStr, *timeoutStr;
         int queue_depth, nr_qpairs;
         struct spdk_bdev *bdev;
+        long timeout_nsec;
 
         devStr = spdk_conf_section_get_nmval(sp, "devConf", i, 0);
         if (devStr == NULL) {
@@ -539,11 +543,17 @@ static int bdev_cxlflash_initialize(void) {
         } else {
             nr_qpairs = 1;
         }
-        SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "devStr=%s, queueDepth=%d, nrQpairs=%d\n", devStr, queue_depth, nr_qpairs);
+        timeoutStr = spdk_conf_section_get_nmval(sp, "devConf", i, 3);
+        if (timeoutStr) {
+            timeout_nsec = strtol(timeoutStr, NULL, 10);
+        } else {
+            timeout_nsec = 0;
+        }
+        SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "devStr=%s, queueDepth=%d, nrQpairs=%d, timeout_nsec=%ld\n", devStr, queue_depth, nr_qpairs, timeout_nsec);
 
-        bdev = create_cxlflash_bdev(NULL, NULL, devStr, queue_depth, nr_qpairs);
+        bdev = create_cxlflash_bdev(NULL, NULL, devStr, queue_depth, nr_qpairs, timeout_nsec);
         if (bdev == NULL) {
-            SPDK_ERRLOG("Could not create cxlflash disk for %s, queue_depth=%d\n", devStr, queue_depth);
+            SPDK_ERRLOG("Could not create cxlflash disk for %s, queue_depth=%d, timeout_nsec=%ld\n", devStr, queue_depth, timeout_nsec);
             rc = -EINVAL;
             goto free_buffer;
         }
