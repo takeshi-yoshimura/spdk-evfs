@@ -44,6 +44,9 @@
 
 #include "bdev_null.h"
 
+#include <sys/time.h>
+#include <time.h>
+
 struct null_bdev {
 	struct spdk_bdev	bdev;
 	TAILQ_ENTRY(null_bdev)	tailq;
@@ -83,6 +86,8 @@ bdev_null_destruct(void *ctx)
 	return 0;
 }
 
+static struct timespec t;
+
 static void
 bdev_null_submit_request(struct spdk_io_channel *_ch, struct spdk_bdev_io *bdev_io)
 {
@@ -108,6 +113,7 @@ bdev_null_submit_request(struct spdk_io_channel *_ch, struct spdk_bdev_io *bdev_
 		spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
 		break;
 	}
+	clock_gettime(CLOCK_MONOTONIC, &t);
 }
 
 static bool
@@ -226,13 +232,24 @@ delete_null_bdev(struct spdk_bdev *bdev, spdk_delete_null_complete cb_fn, void *
 	spdk_bdev_unregister(bdev, cb_fn, cb_arg);
 }
 
+static double elapsed = 0.0;
+static int num = 0;
+
 static int
 null_io_poll(void *arg)
 {
 	struct null_io_channel		*ch = arg;
 	TAILQ_HEAD(, spdk_bdev_io)	io;
 	struct spdk_bdev_io		*bdev_io;
+	static struct timespec t2;
 
+	clock_gettime(CLOCK_MONOTONIC, &t2);
+	elapsed += (t2.tv_sec - t.tv_sec) * 1000 * 1000 * 1000 + (t2.tv_nsec - t.tv_nsec);
+	++num;
+	if (num > 1000000) {
+		SPDK_ERRLOG("avg time: %f\n", elapsed / num);
+		num = 0;
+	}
 	TAILQ_INIT(&io);
 	TAILQ_SWAP(&ch->io, &io, spdk_bdev_io, module_link);
 
