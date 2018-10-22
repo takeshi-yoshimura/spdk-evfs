@@ -87,6 +87,7 @@ bdev_null_destruct(void *ctx)
 }
 
 static struct timespec t;
+static int set = 0;
 
 static void
 bdev_null_submit_request(struct spdk_io_channel *_ch, struct spdk_bdev_io *bdev_io)
@@ -114,6 +115,7 @@ bdev_null_submit_request(struct spdk_io_channel *_ch, struct spdk_bdev_io *bdev_
 		break;
 	}
 	clock_gettime(CLOCK_MONOTONIC, &t);
+	set = 1;
 }
 
 static bool
@@ -232,8 +234,9 @@ delete_null_bdev(struct spdk_bdev *bdev, spdk_delete_null_complete cb_fn, void *
 	spdk_bdev_unregister(bdev, cb_fn, cb_arg);
 }
 
-static double elapsed = 0.0;
-static int num = 0;
+static double elapsed = 0.0, elapsed2 = 0.0;
+static int num = 0, num2 = 0;
+static struct timespec t2;
 
 static int
 null_io_poll(void *arg)
@@ -241,16 +244,30 @@ null_io_poll(void *arg)
 	struct null_io_channel		*ch = arg;
 	TAILQ_HEAD(, spdk_bdev_io)	io;
 	struct spdk_bdev_io		*bdev_io;
-	static struct timespec t2;
+	static struct timespec t3;
 
-	clock_gettime(CLOCK_MONOTONIC, &t2);
-	elapsed += (t2.tv_sec - t.tv_sec) * 1000 * 1000 * 1000 + (t2.tv_nsec - t.tv_nsec);
-	++num;
-	if (num > 1000000) {
-		SPDK_ERRLOG("avg time: %f\n", elapsed / num);
-		num = 0;
-		elapsed = 0;
+	clock_gettime(CLOCK_MONOTONIC, &t3);
+	if (set) {
+		elapsed += (t3.tv_sec - t.tv_sec) * 1000 * 1000 * 1000 + (t3.tv_nsec - t.tv_nsec);
+		++num;
+		if (num > 1000000) {
+			SPDK_ERRLOG("avg time: %f\n", elapsed / num);
+			num = 0;
+			elapsed = 0;
+		}
+		set = 0;
 	}
+	if (num2 > 0) {
+		elapsed += (t3.tv_sec - t2.tv_sec) * 1000 * 1000 * 1000 + (t3.tv_nsec - t2.tv_nsec);
+	}
+	++num2;
+	t2 = t3;
+	if (num2 > 1000000) {
+		SPDK_ERRLOG("avg time2: %f\n", elapsed2 / num2);
+		num2 = 0;
+		elapsed2 = 0;
+	}
+
 	TAILQ_INIT(&io);
 	TAILQ_SWAP(&ch->io, &io, spdk_bdev_io, module_link);
 
