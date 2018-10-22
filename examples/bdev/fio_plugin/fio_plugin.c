@@ -604,25 +604,12 @@ spdk_fio_poll_thread(struct spdk_fio_thread *fio_thread)
 	struct spdk_fio_msg *msg;
 	struct spdk_fio_poller *p, *tmp;
 	size_t count;
-	static struct timespec t3;
-	clock_gettime(CLOCK_MONOTONIC, &t3);
 
 	/* Process new events */
 	count = spdk_ring_dequeue(fio_thread->ring, (void **)&msg, 1);
 	if (count > 0) {
 		msg->cb_fn(msg->cb_arg);
 		free(msg);
-	}
-	if (num2 > 0) {
-		elapsed2 += (t3.tv_sec - t2.tv_sec) * 1000 * 1000 * 1000 + (t3.tv_nsec - t2.tv_nsec);
-	}
-	++num2;
-	t2.tv_nsec = t3.tv_nsec;
-	t2.tv_sec = t3.tv_sec;
-	if (num2 > 1000000) {
-		SPDK_ERRLOG("avg time2: %f\n", elapsed2 / num2);
-		num2 = 0;
-		elapsed2 = 0;
 	}
 
 	/* Call all pollers */
@@ -640,6 +627,7 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 	struct spdk_fio_thread *fio_thread = td->io_ops_data;
 	struct timespec t0, t1;
 	uint64_t timeout = 0;
+	struct timespec t3;
 
 	if (t) {
 		timeout = t->tv_sec * 1000000000L + t->tv_nsec;
@@ -649,6 +637,18 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 	fio_thread->iocq_count = 0;
 
 	for (;;) {
+		clock_gettime(CLOCK_MONOTONIC, &t3);
+		if (num2 > 0) {
+			elapsed2 += (t3.tv_sec - t2.tv_sec) * 1000 * 1000 * 1000 + (t3.tv_nsec - t2.tv_nsec);
+		}
+		++num2;
+		t2.tv_nsec = t3.tv_nsec;
+		t2.tv_sec = t3.tv_sec;
+		if (num2 > 1000000) {
+			SPDK_ERRLOG("avg time2: %f\n", elapsed2 / num2);
+			num2 = 0;
+			elapsed2 = 0;
+		}
 		spdk_fio_poll_thread(fio_thread);
 
 		if (fio_thread->iocq_count >= min) {
