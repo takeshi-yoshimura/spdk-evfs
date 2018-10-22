@@ -249,6 +249,7 @@ null_io_poll(void *arg)
 	if (num > 1000000) {
 		SPDK_ERRLOG("avg time: %f\n", elapsed / num);
 		num = 0;
+		elapsed = 0;
 	}
 	TAILQ_INIT(&io);
 	TAILQ_SWAP(&ch->io, &io, spdk_bdev_io, module_link);
