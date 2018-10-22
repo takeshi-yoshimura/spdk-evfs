@@ -666,8 +666,8 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 		clock_gettime(CLOCK_MONOTONIC, &t4);
 		elapsed += (t4.tv_sec - t3.tv_sec) * 1000 * 1000 * 1000 + (t4.tv_nsec - t3.tv_nsec);
 		++num;
-		if (num2 > 10000) {
-			SPDK_ERRLOG("avg time2: %f, %lu, %lu\n", elapsed2 / num2, fio_thread->iocq_count, min);
+		if (num > 10000) {
+			SPDK_ERRLOG("avg time2: %f, %lu, %lu\n", elapsed / num, fio_thread->iocq_count, min);
 			num2 = 0;
 			elapsed2 = 0;
 		}
