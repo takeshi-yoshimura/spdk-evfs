@@ -627,7 +627,7 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 	struct spdk_fio_thread *fio_thread = td->io_ops_data;
 	struct timespec t0, t1;
 	uint64_t timeout = 0;
-	struct timespec t3;
+	struct timespec t3, t4;
 
 	if (t) {
 		timeout = t->tv_sec * 1000000000L + t->tv_nsec;
@@ -644,8 +644,8 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 		++num2;
 		t2.tv_nsec = t3.tv_nsec;
 		t2.tv_sec = t3.tv_sec;
-		if (num2 > 1000000) {
-			SPDK_ERRLOG("avg time2: %f, %lu, %lu\n", elapsed2 / num2, fio_thread->iocq_count, min);
+		if (num2 > 10000) {
+			SPDK_ERRLOG("avg time: %f, %lu, %lu\n", elapsed2 / num2, fio_thread->iocq_count, min);
 			num2 = 0;
 			elapsed2 = 0;
 		}
@@ -662,6 +662,14 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 			if (elapse > timeout) {
 				break;
 			}
+		}
+		clock_gettime(CLOCK_MONOTONIC, &t4);
+		elapsed += (t4.tv_sec - t3.tv_sec) * 1000 * 1000 * 1000 + (t4.tv_nsec - t3.tv_nsec);
+		++num;
+		if (num2 > 10000) {
+			SPDK_ERRLOG("avg time2: %f, %lu, %lu\n", elapsed2 / num2, fio_thread->iocq_count, min);
+			num2 = 0;
+			elapsed2 = 0;
 		}
 	}
 
