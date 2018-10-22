@@ -111,8 +111,6 @@ bdev_null_submit_request(struct spdk_io_channel *_ch, struct spdk_bdev_io *bdev_
 		spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
 		break;
 	}
-	clock_gettime(CLOCK_MONOTONIC, &t);
-	set = 1;
 }
 
 static bool
