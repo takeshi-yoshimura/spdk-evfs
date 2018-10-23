@@ -626,7 +626,7 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 
 	if (t) {
 		timeout = t->tv_sec * 1000000000L + t->tv_nsec;
-		clock_gettime(CLOCK_MONOTONIC_RAW, &t0);
+		clock_gettime(CLOCK_MONOTONIC, &t0);
 	}
 
 	fio_thread->iocq_count = 0;
@@ -639,7 +639,7 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 		}
 
 		if (t) {
-			clock_gettime(CLOCK_MONOTONIC_RAW, &t1);
+			clock_gettime(CLOCK_MONOTONIC, &t1);
 			uint64_t elapse = ((t1.tv_sec - t0.tv_sec) * 1000000000L)
 					  + t1.tv_nsec - t0.tv_nsec;
 			if (elapse > timeout) {
