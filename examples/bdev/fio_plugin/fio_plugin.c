@@ -624,14 +624,14 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 	struct timespec t0, t1;
 	uint64_t timeout = 0;
 
-	fio_thread->iocq_count = 0;
-
 	if (t) {
-	    timeout = t->tv_sec * 1000000000L + t->tv_nsec;
-	    clock_gettime(CLOCK_MONOTONIC_RAW, &t0);
+		timeout = t->tv_sec * 1000000000L + t->tv_nsec;
+		clock_gettime(CLOCK_MONOTONIC_RAW, &t0);
 	}
 
-    for (;;) {
+	fio_thread->iocq_count = 0;
+
+	for (;;) {
 		spdk_fio_poll_thread(fio_thread);
 
 		if (fio_thread->iocq_count >= min) {
