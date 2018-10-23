@@ -400,7 +400,7 @@ struct spdk_bdev *create_capi_bdev(char * name, struct spdk_uuid * uuid, char * 
 	bdev->disk.product_name = "CAPI Flash";
 	bdev->disk.write_cache = 0;
 	bdev->disk.blocklen = BLK_SIZE;
-	bdev->disk.blockcnt = lun_size / BLK_SIZE;
+	bdev->disk.blockcnt = lun_size;
 	if (uuid) {
 		bdev->disk.uuid = *uuid;
 	} else {
