@@ -308,26 +308,31 @@ static int capi_io_poll(void *arg)
 	int rc, c = 0;
 	uint64_t status;
 	struct spdk_bdev_io * bdev_io, * next;
-	int pflag = 0;
 
-	for (bdev_io = TAILQ_FIRST(&ch->io); bdev_io != NULL; bdev_io = next) {
-		struct capi_bdev * bdev = (struct capi_bdev *)bdev_io->bdev->ctxt;
-		struct capi_bdev_io *bio = (struct capi_bdev_io *)bdev_io->driver_ctx;
-		next = TAILQ_NEXT(bdev_io, module_link);
+	while (!TAILQ_EMPTY(&ch->io)) {
+		int pflag = 0;
 
-		rc = cblk_aresult(bdev->chunk_id, &bio->tag, &status, pflag);
-		if (rc > 0) {
-			c++;
-			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_aresult(%d, %d, status, %d)=SUCCESS\n", bdev->chunk_id, bio->tag, pflag);
-			TAILQ_REMOVE(&ch->io, bdev_io, module_link);
-			spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_SUCCESS);
-		} else if (rc < 0) {
-			SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_aresult(%d, %d, status, %d)=FAIL\n", bdev->chunk_id, bio->tag, pflag);
-			TAILQ_REMOVE(&ch->io, bdev_io, module_link);
-			spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
-		}
-		if (pflag == 0) {
-		    pflag = CBLK_ARESULT_NO_HARVEST;
+		for (bdev_io = TAILQ_FIRST(&ch->io); bdev_io != NULL; bdev_io = next) {
+			struct capi_bdev *bdev = (struct capi_bdev *) bdev_io->bdev->ctxt;
+			struct capi_bdev_io *bio = (struct capi_bdev_io *) bdev_io->driver_ctx;
+			next = TAILQ_NEXT(bdev_io, module_link);
+
+			rc = cblk_aresult(bdev->chunk_id, &bio->tag, &status, pflag);
+			if (rc > 0) {
+				c++;
+				SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_aresult(%d, %d, status, %d)=SUCCESS\n", bdev->chunk_id,
+							  bio->tag, pflag);
+				TAILQ_REMOVE(&ch->io, bdev_io, module_link);
+				spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_SUCCESS);
+			} else if (rc < 0) {
+				SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "cblk_aresult(%d, %d, status, %d)=FAIL\n", bdev->chunk_id, bio->tag,
+							  pflag);
+				TAILQ_REMOVE(&ch->io, bdev_io, module_link);
+				spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
+			}
+			if (pflag == 0) {
+				pflag = CBLK_ARESULT_NO_HARVEST;
+			}
 		}
 	}
 
