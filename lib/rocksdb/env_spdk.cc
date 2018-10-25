@@ -62,6 +62,23 @@ struct sync_args {
 
 __thread struct sync_args g_sync_args;
 
+
+static void
+_spdk_send_msg(spdk_thread_fn fn, void *ctx, void *thread_ctx)
+{
+    /* Not supported */
+    assert(false);
+}
+
+static void
+set_channel()
+{
+    if (g_fs != NULL && g_sync_args.channel == NULL) {
+        spdk_allocate_thread(_spdk_send_msg, NULL, NULL, NULL, "spdk_rocksdb");
+        g_sync_args.channel = spdk_fs_alloc_io_channel_sync(g_fs);
+    }
+}
+
 static void
 __call_fn(void *arg1, void *arg2)
 {
@@ -127,6 +144,7 @@ public:
 
 SpdkSequentialFile::~SpdkSequentialFile(void)
 {
+    set_channel();
 	spdk_file_close(mFile, g_sync_args.channel);
 }
 
@@ -135,6 +153,7 @@ SpdkSequentialFile::Read(size_t n, Slice *result, char *scratch)
 {
 	uint64_t ret;
 
+    set_channel();
 	ret = spdk_file_read(mFile, g_sync_args.channel, scratch, mOffset, n);
 	mOffset += ret;
 	*result = Slice(scratch, ret);
@@ -167,12 +186,14 @@ public:
 
 SpdkRandomAccessFile::~SpdkRandomAccessFile(void)
 {
+    set_channel();
 	spdk_file_close(mFile, g_sync_args.channel);
 }
 
 Status
 SpdkRandomAccessFile::Read(uint64_t offset, size_t n, Slice *result, char *scratch) const
 {
+    set_channel();
 	spdk_file_read(mFile, g_sync_args.channel, scratch, offset, n);
 	*result = Slice(scratch, n);
 	return Status::OK();
@@ -208,6 +229,7 @@ public:
 	virtual Status Truncate(uint64_t size) override
 	{
 		int rc;
+		set_channel();
 		rc = spdk_file_truncate(mFile, g_sync_args.channel, size);
 		if (!rc) {
 			mSize = size;
@@ -219,6 +241,7 @@ public:
 	}
 	virtual Status Close() override
 	{
+		set_channel();
 		spdk_file_close(mFile, g_sync_args.channel);
 		mFile = NULL;
 		return Status::OK();
@@ -230,11 +253,13 @@ public:
 	}
 	virtual Status Sync() override
 	{
+        set_channel();
 		spdk_file_sync(mFile, g_sync_args.channel);
 		return Status::OK();
 	}
 	virtual Status Fsync() override
 	{
+        set_channel();
 		spdk_file_sync(mFile, g_sync_args.channel);
 		return Status::OK();
 	}
@@ -254,6 +279,7 @@ public:
 	{
 		int rc;
 
+        set_channel();
 		rc = spdk_file_truncate(mFile, g_sync_args.channel, offset + len);
 		if (!rc) {
 			return Status::OK();
@@ -268,6 +294,7 @@ public:
 		 * SPDK BlobFS does not have a range sync operation yet, so just sync
 		 *  the whole file.
 		 */
+        set_channel();
 		spdk_file_sync(mFile, g_sync_args.channel);
 		return Status::OK();
 	}
@@ -280,6 +307,7 @@ public:
 Status
 SpdkWritableFile::Append(const Slice &data)
 {
+    set_channel();
 	spdk_file_write(mFile, g_sync_args.channel, (void *)data.data(), mSize, data.size());
 	mSize += data.size();
 
@@ -326,6 +354,7 @@ public:
 			int rc;
 
 			std::string name = sanitize_path(fname, mDirectory);
+            set_channel();
 			rc = spdk_fs_open_file(g_fs, g_sync_args.channel,
 					       name.c_str(), 0, &file);
 			if (rc == 0) {
@@ -353,6 +382,7 @@ public:
 			struct spdk_file *file;
 			int rc;
 
+            set_channel();
 			rc = spdk_fs_open_file(g_fs, g_sync_args.channel,
 					       name.c_str(), 0, &file);
 			if (rc == 0) {
@@ -376,6 +406,7 @@ public:
 			struct spdk_file *file;
 			int rc;
 
+            set_channel();
 			rc = spdk_fs_open_file(g_fs, g_sync_args.channel, name.c_str(),
 					       SPDK_BLOBFS_OPEN_CREATE, &file);
 			if (rc == 0) {
@@ -410,6 +441,7 @@ public:
 		int rc;
 		std::string name = sanitize_path(fname, mDirectory);
 
+        set_channel();
 		rc = spdk_fs_file_stat(g_fs, g_sync_args.channel, name.c_str(), &stat);
 		if (rc == 0) {
 			return Status::OK();
@@ -422,6 +454,7 @@ public:
 		std::string src_name = sanitize_path(src, mDirectory);
 		std::string target_name = sanitize_path(t, mDirectory);
 
+        set_channel();
 		rc = spdk_fs_rename_file(g_fs, g_sync_args.channel,
 					 src_name.c_str(), target_name.c_str());
 		if (rc == -ENOENT) {
@@ -439,6 +472,7 @@ public:
 		int rc;
 		std::string name = sanitize_path(fname, mDirectory);
 
+        set_channel();
 		rc = spdk_fs_file_stat(g_fs, g_sync_args.channel, name.c_str(), &stat);
 		if (rc == -ENOENT) {
 			return EnvWrapper::GetFileSize(fname, size);
@@ -451,6 +485,7 @@ public:
 		int rc;
 		std::string name = sanitize_path(fname, mDirectory);
 
+        set_channel();
 		rc = spdk_fs_delete_file(g_fs, g_sync_args.channel, name.c_str());
 		if (rc == -ENOENT) {
 			return EnvWrapper::DeleteFile(fname);
@@ -462,12 +497,14 @@ public:
 	{
 		std::string name = sanitize_path(fname, mDirectory);
 
+        set_channel();
 		spdk_fs_open_file(g_fs, g_sync_args.channel, name.c_str(),
 				  SPDK_BLOBFS_OPEN_CREATE, (struct spdk_file **)lock);
 		return Status::OK();
 	}
 	virtual Status UnlockFile(FileLock *lock) override
 	{
+        set_channel();
 		spdk_file_close((struct spdk_file *)lock, g_sync_args.channel);
 		return Status::OK();
 	}
@@ -520,12 +557,6 @@ public:
 	}
 };
 
-static void
-_spdk_send_msg(spdk_thread_fn fn, void *ctx, void *thread_ctx)
-{
-	/* Not supported */
-	assert(false);
-}
 
 void SpdkInitializeThread(void)
 {
