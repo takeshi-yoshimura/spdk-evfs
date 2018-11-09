@@ -38,7 +38,7 @@ CAPI_DIR := $(abspath $(CONFIG_CAPI_DIR))
 
 ifeq ($(CONFIG_CXLFLASH_COMPAT),y)
 CXLFLASH_DIR := $(abspath $(CONFIG_CXLFLASH_DIR))
-CFLAGS += -I$(CAPI_DIR)/include -L$(CXLFLASH_DIR)/lib -lcxlflash_compat
+CFLAGS += -I$(CXLFLASH_DIR)/include -L$(CXLFLASH_DIR)/lib -lcxlflash_compat
 else
 CFLAGS += -I$(CAPI_DIR)/include -L$(CAPI_DIR)/lib64 -lcflsh_block-0
 endif
