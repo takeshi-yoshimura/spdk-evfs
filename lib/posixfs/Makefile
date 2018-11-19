@@ -2,7 +2,6 @@
 #  BSD LICENSE
 #
 #  Copyright (c) Intel Corporation.
-#  Copyright (c) 2015-2016, Micron Technology, Inc.
 #  All rights reserved.
 #
 #  Redistribution and use in source and binary forms, with or without
@@ -32,29 +31,10 @@
 #  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-SPDK_ROOT_DIR := $(abspath $(CURDIR)/../../..)
+SPDK_ROOT_DIR := $(abspath $(CURDIR)/../..)
 include $(SPDK_ROOT_DIR)/mk/spdk.common.mk
-include $(SPDK_ROOT_DIR)/mk/spdk.app.mk
-include $(SPDK_ROOT_DIR)/mk/spdk.modules.mk
 
-APP := fio_plugin
+C_SRCS = posixfs.c
+LIBNAME = posixfs
 
-C_SRCS = fio_plugin.c
-CFLAGS += -I$(CONFIG_FIO_SOURCE_DIR) -DBITS_PER_LONG=64
-LDFLAGS += -shared -rdynamic
-
-SPDK_LIB_LIST += thread util bdev conf copy rpc jsonrpc json log trace
-
-LIBS += $(BLOCKDEV_MODULES_LINKER_ARGS)
-LIBS += $(SPDK_LIB_LINKER_ARGS) $(ENV_LINKER_ARGS)
-
-all: $(APP)
-	@:
-
-$(APP) : $(OBJS) $(SPDK_LIB_FILES) $(ENV_LIBS) $(BLOCKDEV_MODULES_FILES)
-	$(LINK_C)
-
-clean:
-	$(CLEAN_C) $(APP)
-
-include $(SPDK_ROOT_DIR)/mk/spdk.deps.mk
+include $(SPDK_ROOT_DIR)/mk/spdk.lib.mk

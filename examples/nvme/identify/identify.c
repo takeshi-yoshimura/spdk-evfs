@@ -1691,6 +1691,7 @@ int main(int argc, char **argv)
 	opts.mem_channel = 1;
 	opts.master_core = g_master_core;
 	opts.core_mask = g_core_mask;
+	opts.hugepage_single_segments = true;
 	if (g_trid.trtype != SPDK_NVME_TRANSPORT_PCIE) {
 		opts.no_pci = true;
 	}

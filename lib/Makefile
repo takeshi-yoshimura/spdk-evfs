@@ -41,6 +41,7 @@ ifeq ($(OS),Linux)
 DIRS-y += nbd
 DIRS-$(CONFIG_VHOST) += vhost
 DIRS-$(CONFIG_VIRTIO) += virtio
+DIRS-$(CONFIG_POSIXFS) += posixfs
 endif
 
 DIRS-$(CONFIG_REDUCE) += reduce
