@@ -134,6 +134,7 @@ int main(int argc, char **argv)
 	opts.reactor_mask = "0x3";
 	opts.mem_size = 1024;
 	opts.shutdown_cb = NULL;
+    opts.hugepage_single_segments = 1;
 
 	spdk_fs_set_cache_size(512);
 	g_bdev_name = argv[2];

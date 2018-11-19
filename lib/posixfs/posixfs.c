@@ -62,6 +62,7 @@ extern char *program_invocation_short_name;
 #include <fcntl.h>
 #include <dirent.h>
 #include <sys/types.h>
+#include <pthread.h>
 
 static struct spdk_io_channel * g_channel;
 static struct spdk_filesystem * g_fs;
@@ -72,6 +73,9 @@ static struct spdk_bs_dev * g_bs_dev;
 static struct spdk_file ** files;
 static uint64_t * offsets;
 static long max_open;
+
+
+static pthread_t hookfs_thread;
 
 static void
 start_hookfs_fn(void *arg1, void *arg2)
@@ -166,7 +170,6 @@ hookfs_shutdown(void)
 }
 
 static struct real_fsiface {
-    int initialized;
     int (*open)(char const *, int, ...);
     ssize_t (*read)(int, void *, size_t);
     ssize_t (*write)(int, const void *, size_t);
@@ -180,78 +183,89 @@ static struct real_fsiface {
     DIR * (*opendir)(const char *);
     int (*closedir)(DIR *);
     struct dirent * (*readdir)(DIR *);
-} realfs = {.initialized = 0};
+} realfs;
 
 static void * load_symbol(const char * symbol) {
     char * msg;
     void * ret;
     ret = dlsym(RTLD_NEXT, symbol);
     if ( (msg = dlerror()) ) {
-        fprintf(stderr, "dlsym error: %s\n", msg);
+        SPDK_ERRLOG("dlsym error: %s\n", msg);
         exit(1);
     }
     return ret;
 }
 
-static void init_fsiface(void) {
-    if (!realfs.initialized) {
-        struct spdk_app_opts opts = {};
-        int rc = 0;
+static void * start_app(void * args) {
+    struct spdk_app_opts opts = {};
+    spdk_app_opts_init(&opts);
+    opts.name = program_invocation_short_name;
+    opts.config_file = getenv(HOOKFS_SPDK_CONF_ENV);
+    opts.reactor_mask = "0x3";
+    opts.mem_size = 6144;
+    opts.shutdown_cb = hookfs_shutdown;
+    opts.hugepage_single_segments = 1;
 
-        realfs.open = load_symbol("open64");
-        realfs.read = load_symbol("read");
-        realfs.write = load_symbol("write");
-        realfs.pread = load_symbol("pread");
-        realfs.pwrite = load_symbol("pwrite");
-        realfs.lseek = load_symbol("lseek");
-        realfs.close = load_symbol("close");
-        realfs.stat = load_symbol("stat");
-        realfs.fstat = load_symbol("fstat");
-        realfs.posix_fadvise = load_symbol("posix_fadvise");
-        realfs.opendir = load_symbol("opendir");
-        realfs.closedir = load_symbol("closedir");
-        realfs.readdir = load_symbol("readdir");
-
-        spdk_app_opts_init(&opts);
-        opts.name = program_invocation_short_name;
-        opts.config_file = getenv(HOOKFS_SPDK_CONF_ENV);
-        opts.reactor_mask = "0x3";
-        opts.mem_size = 6144;
-        opts.shutdown_cb = hookfs_shutdown;
-
-        g_bdev_name = getenv(HOOKFS_SPDK_BDEV_ENV);
-        g_mountpoint = getenv(HOOKFS_MOUNT_POINT_ENV);
-
-        if (!opts.config_file || !g_bdev_name || !g_mountpoint) {
-            fprintf(stderr, "set environment variables: %s, %s, %s\n", HOOKFS_SPDK_CONF_ENV, HOOKFS_SPDK_BDEV_ENV, HOOKFS_MOUNT_POINT_ENV);
-            exit(1);
-        }
-
-        if (!access(g_mountpoint, 0)) {
-            fprintf(stderr, "%s already exists.\n", g_mountpoint);
-            exit(1);
-        }
-
-        max_open = sysconf(_SC_OPEN_MAX);
-        files = malloc(sizeof(struct spdk_file *) * max_open);
-        if (!files) {
-            fprintf(stderr, "malloc(%ld) failed\n", sizeof(struct spdk_file *) * max_open);
-            exit(1);
-        }
-        spdk_mem_all_zero(files, sizeof(struct spdk_file *) * max_open);
-
-        offsets = malloc(sizeof(uint64_t) * max_open);
-        if (!offsets) {
-            fprintf(stderr, "malloc(%ld) failed\n", sizeof(uint64_t) * max_open);
-            exit(1);
-        }
-        spdk_mem_all_zero(offsets, sizeof(uint64_t) * max_open);
-
-        rc = spdk_app_start(&opts, hookfs_run, NULL, NULL);
-        if (!rc) {
-            spdk_app_fini();
-        }
+    int rc = spdk_app_start(&opts, hookfs_run, NULL, NULL);
+    if (!rc) {
+        spdk_app_fini();
     }
+    return NULL;
+}
+
+static void init_fsiface(void) {
+    int rc = 0;
+
+    realfs.open = load_symbol("open");
+    realfs.read = load_symbol("read");
+    realfs.write = load_symbol("write");
+    realfs.pread = load_symbol("pread");
+    realfs.pwrite = load_symbol("pwrite");
+    realfs.lseek = load_symbol("lseek");
+    realfs.close = load_symbol("close");
+//        realfs.stat = load_symbol("stat");
+//        realfs.fstat = load_symbol("fstat");
+    realfs.posix_fadvise = load_symbol("posix_fadvise");
+    realfs.opendir = load_symbol("opendir");
+    realfs.closedir = load_symbol("closedir");
+    realfs.readdir = load_symbol("readdir");
+
+    g_bdev_name = getenv(HOOKFS_SPDK_BDEV_ENV);
+    g_mountpoint = getenv(HOOKFS_MOUNT_POINT_ENV);
+
+    if (!getenv(HOOKFS_SPDK_CONF_ENV) || !g_bdev_name || !g_mountpoint) {
+        SPDK_ERRLOG("set environment variables: %s, %s, %s\n", HOOKFS_SPDK_CONF_ENV, HOOKFS_SPDK_BDEV_ENV, HOOKFS_MOUNT_POINT_ENV);
+        exit(1);
+    }
+
+    if (!access(g_mountpoint, 0)) {
+        SPDK_ERRLOG("%s already exists.\n", g_mountpoint);
+        exit(1);
+    }
+
+    max_open = sysconf(_SC_OPEN_MAX);
+    files = malloc(sizeof(struct spdk_file *) * max_open);
+    if (!files) {
+        SPDK_ERRLOG("malloc(%ld) failed\n", sizeof(struct spdk_file *) * max_open);
+        exit(1);
+    }
+    spdk_mem_all_zero(files, sizeof(struct spdk_file *) * max_open);
+
+    offsets = malloc(sizeof(uint64_t) * max_open);
+    if (!offsets) {
+        SPDK_ERRLOG("malloc(%ld) failed\n", sizeof(uint64_t) * max_open);
+        exit(1);
+    }
+    spdk_mem_all_zero(offsets, sizeof(uint64_t) * max_open);
+
+    spdk_smp_rmb();
+
+//    pthread_create(&hookfs_thread, NULL, start_app, NULL);
+}
+
+__attribute__((constructor)) void hookfs_init(void) {
+    init_fsiface();
+    printf("init!!!!!\n");
 }
 
 static bool hookfs_is_under_mountpoint(const char * abspath) {
@@ -264,7 +278,7 @@ static int hookfs_open(const char * abspath, int oflag) {
 
     fd = realfs.open("/dev/null", oflag);
     if (fd < 0) {
-        fprintf(stderr, "obtaining a FD failed: %d (%s)\n", errno, spdk_strerror(errno));
+        SPDK_ERRLOG("obtaining a FD failed: %d (%s)\n", errno, spdk_strerror(errno));
         return fd;
     }
 
@@ -284,12 +298,11 @@ int open(char const * path, int oflag, ...) {
     int mflag;
     char abspath[PATH_MAX];
 
-    init_fsiface();
-    if (!realpath(path, abspath) && hookfs_is_under_mountpoint(abspath)) {
+/*    if (!realpath(path, abspath) && hookfs_is_under_mountpoint(abspath)) {
         return hookfs_open(abspath, oflag);
-    }
+    }*/
 
-    fprintf(stderr, ">>>>> in open <<<<<<\n");
+    SPDK_ERRLOG(">>>>> in open <<<<<<\n");
     va_start(args, oflag);
     mflag = va_arg(args, int);
     return realfs.open(path, oflag, mflag);
@@ -305,11 +318,10 @@ static int hookfs_release(int fd) {
 }
 
 int close(int fd) {
-    init_fsiface();
     if (files[fd]) {
         return hookfs_release(fd);
     }
-    fprintf(stderr, ">>>>> in close <<<<<<\n");
+    SPDK_ERRLOG(">>>>> in close <<<<<<\n");
     return realfs.close(fd);
 }
 
@@ -319,7 +331,6 @@ static int hookfs_read(int fd, char * buf, size_t len, uint64_t offset)
 }
 
 ssize_t read(int fd, void * buf, size_t count) {
-    init_fsiface();
     if (files[fd]) {
         int len = hookfs_read(fd, buf, count, offsets[fd]);
         if (len > 0) {
@@ -327,15 +338,15 @@ ssize_t read(int fd, void * buf, size_t count) {
         }
         return len;
     }
-    fprintf(stderr, ">>>>> in read <<<<<\n");
+    SPDK_ERRLOG(">>>>> in read <<<<<\n");
     return realfs.read(fd, buf, count);
 }
 
 ssize_t pread(int fd, void * buf, size_t count, off_t offset) {
-    init_fsiface();
     if (files[fd]) {
         return hookfs_read(fd, buf, count, offset);
     }
+    SPDK_ERRLOG(">>>>> in pread <<<<<\n");
     return realfs.pread(fd, buf, count, offset);
 }
 
@@ -351,7 +362,6 @@ static int hookfs_write(int fd, const char * buf, size_t len, uint64_t offset) {
 }
 
 ssize_t write(int fd, const void * buf, size_t count) {
-    init_fsiface();
     if (files[fd]) {
         int len = hookfs_write(fd, buf, count, offsets[fd]);
         if (len > 0) {
@@ -359,15 +369,15 @@ ssize_t write(int fd, const void * buf, size_t count) {
         }
         return len;
     }
-    fprintf(stderr, ">>>>> in write <<<<<\n");
+    SPDK_ERRLOG(">>>>> in write <<<<<\n");
     return realfs.write(fd, buf, count);
 }
 
 ssize_t pwrite(int fd, const void * buf, size_t count, off_t offset) {
-    init_fsiface();
     if (files[fd]) {
         return hookfs_write(fd, buf, count, offset);
     }
+    SPDK_ERRLOG(">>>>> in pwrite <<<<<\n");
     return realfs.pwrite(fd, buf, count, offset);
 }
 
@@ -389,25 +399,24 @@ static int hookfs_stat(const char * abspath, struct stat * stbuf)
 int stat(const char * path, struct stat * stbuf) {
     char abspath[PATH_MAX];
 
-    init_fsiface();
     if (!realpath(path, abspath) && hookfs_is_under_mountpoint(abspath)) {
         return hookfs_stat(abspath, stbuf);
     }
 
+    SPDK_ERRLOG(">>>>> in stat <<<<<\n");
     return realfs.stat(path, stbuf);
 }
 
 int fstat(int fd, struct stat * stbuf) {
-    init_fsiface();
     if (files[fd]) {
         return stat(spdk_file_get_name(files[fd]), stbuf);
     }
+    SPDK_ERRLOG(">>>>> in fstat <<<<<\n");
     return realfs.fstat(fd, stbuf);
 }
 
 off_t lseek(int fd, off_t offset, int whence) {
     struct stat stbuf;
-    init_fsiface();
     if (files[fd]) {
         off_t newoffset = offsets[fd];
         if (fstat(fd, &stbuf) != 0) {
@@ -435,14 +444,15 @@ off_t lseek(int fd, off_t offset, int whence) {
         offsets[fd] = (uint64_t) newoffset;
         return newoffset;
     }
+    SPDK_ERRLOG(">>>>> in lseek <<<<<\n");
     return realfs.lseek(fd, offset, whence);
 }
 
 int posix_fadvise(int fd, off_t offset, off_t len, int advice) {
-    init_fsiface();
     if (files[fd]) {
         return 0;
     }
+    SPDK_ERRLOG(">>>>> in posix_fadvise <<<<<\n");
     return realfs.posix_fadvise(fd, offset, len, advice);
 }
 
@@ -499,11 +509,11 @@ freedir:
 DIR * opendir(const char * name) {
     char abspath[PATH_MAX];
 
-    init_fsiface();
-    if (!realpath(name, abspath) && hookfs_is_under_mountpoint(abspath)) {
+/*    if (!realpath(name, abspath) && hookfs_is_under_mountpoint(abspath)) {
         return hookfs_opendir(abspath);
-    }
+    }*/
 
+    SPDK_ERRLOG(">>>>> in opendir <<<<<\n");
     return realfs.opendir(name);
 }
 
@@ -523,6 +533,8 @@ static struct dirent * hookfs_readdir(DIR * _dirp) {
     strcpy(ret->d_name, dirp->__dd_buf + dirp->__dd_seek);
     dirp->__dd_seek += strlen(ret->d_name) + 1;
 
+    return ret;
+
 freedir:
     free(ret);
     return NULL;
@@ -530,10 +542,10 @@ freedir:
 
 struct dirent * readdir(DIR * _dirp) {
     hookfs_dir_t * dirp = (hookfs_dir_t *)_dirp;
-    init_fsiface();
     if (files[dirp->__dd_fd]) {
         return hookfs_readdir(_dirp);
     }
+    SPDK_ERRLOG(">>>>> in readdir <<<<<\n");
     return realfs.readdir(_dirp);
 }
 
