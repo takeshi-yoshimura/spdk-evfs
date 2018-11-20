@@ -335,9 +335,9 @@ spdk_build_eal_cmdline(const struct spdk_env_opts *opts)
 
 	eal_cmdline = args;
 	eal_cmdline_argcount = argcount;
-	if (atexit(spdk_destruct_eal_cmdline) != 0) {
+/*	if (atexit(spdk_destruct_eal_cmdline) != 0) {
 		fprintf(stderr, "Failed to register cleanup handler\n");
-	}
+	}*/
 
 	return argcount;
 }
