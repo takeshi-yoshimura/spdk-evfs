@@ -272,7 +272,7 @@ void hookfs_init(void) {
     if (!realfs.initialized) {
         init_fsiface();
         while (!realfs.initialized) {
-            sleep(100);
+            sleep(1);
         }
         SPDK_ERRLOG("init!!!!!\n");
     }
