@@ -45,6 +45,7 @@
 #define HOOKFS_SPDK_CONF_ENV "HOOKFS_SPDK_CONF"
 #define HOOKFS_SPDK_BDEV_ENV "HOOKFS_BDEV"
 #define HOOKFS_MOUNT_POINT_ENV "HOOKFS_MOUNT_POINT"
+#define HOOKFS_LOG_ENV "HOOKFS_LOG_ARG"
 
 #define HOOKFS_PAGE_SIZE (4096)
 
@@ -69,6 +70,7 @@ static struct spdk_filesystem * g_fs;
 
 static char * g_bdev_name;
 static char * g_mountpoint;
+static char * g_logstr;
 static struct spdk_bs_dev * g_bs_dev;
 static struct spdk_file ** files;
 static uint64_t * offsets;
@@ -203,6 +205,8 @@ static void * load_symbol(const char * symbol) {
 
 static void * start_app(void * args) {
     struct spdk_app_opts opts = {};
+    int rc;
+
     spdk_app_opts_init(&opts);
     opts.name = program_invocation_short_name;
     opts.config_file = getenv(HOOKFS_SPDK_CONF_ENV);
@@ -211,7 +215,15 @@ static void * start_app(void * args) {
     opts.shutdown_cb = hookfs_shutdown;
     opts.hugepage_single_segments = 1;
 
-    int rc = spdk_app_start(&opts, hookfs_run, NULL, NULL);
+    if (g_logstr) {
+        rc = spdk_log_set_trace_flag(g_logstr);
+        if (rc < 0) {
+            fprintf(stderr, "unknown flag\n");
+        }
+        opts.print_level = SPDK_LOG_DEBUG;
+    }
+
+    rc = spdk_app_start(&opts, hookfs_run, NULL, NULL);
     if (!rc) {
         spdk_app_fini();
     }
@@ -223,6 +235,7 @@ static void init_fsiface(void) {
 
     g_bdev_name = getenv(HOOKFS_SPDK_BDEV_ENV);
     g_mountpoint = getenv(HOOKFS_MOUNT_POINT_ENV);
+    g_logstr = getenv(HOOKFS_LOG_ENV);
 
     if (!getenv(HOOKFS_SPDK_CONF_ENV) || !g_bdev_name || !g_mountpoint) {
         SPDK_ERRLOG("set environment variables: %s, %s, %s\n", HOOKFS_SPDK_CONF_ENV, HOOKFS_SPDK_BDEV_ENV, HOOKFS_MOUNT_POINT_ENV);
