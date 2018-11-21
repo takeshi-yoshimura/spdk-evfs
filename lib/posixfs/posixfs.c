@@ -321,9 +321,9 @@ int open(char const * path, int oflag, ...) {
     if (!realfs.open) {
         realfs.open = load_symbol("open");
     }
-    if (realfs.initialized && !realpath(path, abspath) && hookfs_is_under_mountpoint(abspath)) {
+/*    if (realfs.initialized && !realpath(path, abspath) && hookfs_is_under_mountpoint(abspath)) {
         return hookfs_open(abspath, oflag, mflag);
-    }
+    }*/
 
 //    SPDK_ERRLOG(">>>>> in open: %s <<<<<<\n", path);
     return realfs.open(path, oflag, mflag);
