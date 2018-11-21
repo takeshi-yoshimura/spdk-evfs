@@ -107,10 +107,12 @@ start_hookfs_fn(void *arg1, void *arg2)
 {
     DIR * dir;
     int rc;
+    char dummy[PATH_MAX];
+    snprintf(dummy, PATH_MAX - 1, "%s/", g_mountpoint);
 
     realfs.initialized = 1;
     spdk_smp_rmb();
-    rc = hookfs_mkdir("/", 0755);
+    rc = hookfs_mkdir(dummy, 0755);
     if (rc != 0 && errno != EEXIST) {
         SPDK_ERRLOG("FS init failed: failed to create %s\n", g_mountpoint);
         realfs.initialized = 0;
@@ -273,6 +275,13 @@ void hookfs_init(void) {
             sleep(1);
         }
         SPDK_ERRLOG("init!!!!!\n");
+    }
+}
+
+__attribute__((destructor, used))
+void hookfs_fini(void) {
+    if (realfs.initialized) {
+        pthread_join(hookfs_thread, NULL);
     }
 }
 
