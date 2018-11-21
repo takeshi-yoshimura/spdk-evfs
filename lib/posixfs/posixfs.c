@@ -64,12 +64,14 @@ extern char *program_invocation_short_name;
 #include <dirent.h>
 #include <sys/types.h>
 #include <pthread.h>
+#include <libgen.h>
 
 static struct spdk_io_channel * g_channel;
 static struct spdk_filesystem * g_fs;
 
 static char * g_bdev_name;
-static char * g_mountpoint;
+static char g_mountpoint[PATH_MAX];
+static int g_mountpoint_strlen;
 static char * g_logstr;
 static struct spdk_bs_dev * g_bs_dev;
 static struct spdk_file ** files;
@@ -94,41 +96,25 @@ static struct real_fsiface {
     DIR * (*opendir)(const char *);
     int (*closedir)(DIR *);
     struct dirent * (*readdir)(DIR *);
+    int (*mkdir)(const char *, mode_t);
 } realfs = {.initialized = 0};
+
+
+static int hookfs_mkdir(const char * abspath, mode_t m);
 
 static void
 start_hookfs_fn(void *arg1, void *arg2)
 {
+    DIR * dir;
+    int rc;
+
     realfs.initialized = 1;
     spdk_smp_rmb();
-#if 0
-    struct fuse_args args = FUSE_ARGS_INIT(g_fuse_argc, g_fuse_argv);
-    int rc;
-    struct fuse_cmdline_opts opts = {};
-
-    g_hookfs_thread = pthread_self();
-    rc = fuse_parse_cmdline(&args, &opts);
-    if (rc != 0) {
-        spdk_app_stop(-1);
-        fuse_opt_free_args(&args);
-        return;
+    rc = hookfs_mkdir("/", 0755);
+    if (rc != 0 && errno != EEXIST) {
+        SPDK_ERRLOG("FS init failed: failed to create %s\n", g_mountpoint);
+        realfs.initialized = 0;
     }
-    g_fuse = fuse_new(&args, &spdk_fuse_oper, sizeof(spdk_fuse_oper), NULL);
-    fuse_opt_free_args(&args);
-
-    rc = fuse_mount(g_fuse, g_mountpoint);
-    if (rc != 0) {
-        spdk_app_stop(-1);
-        return;
-    }
-
-    fuse_daemonize(true /* true = run in foreground */);
-
-    fuse_loop(g_fuse);
-
-    fuse_unmount(g_fuse);
-    fuse_destroy(g_fuse);
-#endif
 }
 
 static void
@@ -232,20 +218,32 @@ static void * start_app(void * args) {
 
 static void init_fsiface(void) {
     int rc = 0;
+    char * mp;
+    char abspath[PATH_MAX];
 
     g_bdev_name = getenv(HOOKFS_SPDK_BDEV_ENV);
-    g_mountpoint = getenv(HOOKFS_MOUNT_POINT_ENV);
+    mp = getenv(HOOKFS_MOUNT_POINT_ENV);
     g_logstr = getenv(HOOKFS_LOG_ENV);
 
-    if (!getenv(HOOKFS_SPDK_CONF_ENV) || !g_bdev_name || !g_mountpoint) {
+    if (!getenv(HOOKFS_SPDK_CONF_ENV) || !g_bdev_name || !mp) {
         SPDK_ERRLOG("set environment variables: %s, %s, %s\n", HOOKFS_SPDK_CONF_ENV, HOOKFS_SPDK_BDEV_ENV, HOOKFS_MOUNT_POINT_ENV);
         exit(1);
     }
 
-    if (!access(g_mountpoint, 0)) {
-        SPDK_ERRLOG("%s already exists.\n", g_mountpoint);
+    if (realpath(mp, g_mountpoint)) {
+        SPDK_ERRLOG("%s set in %s is not a valid path", mp, HOOKFS_MOUNT_POINT_ENV);
         exit(1);
     }
+    g_mountpoint_strlen = strlen(g_mountpoint);
+    *(g_mountpoint + g_mountpoint_strlen) = '/';
+    g_mountpoint_strlen += 1;
+    *(g_mountpoint + g_mountpoint_strlen) = '\0';
+
+    if (!access(g_mountpoint, 0)) {
+        SPDK_ERRLOG("%s set in %s already exists.\n", g_mountpoint, HOOKFS_MOUNT_POINT_ENV);
+        exit(1);
+    }
+    g_mountpoint_strlen = strlen(g_mountpoint);
 
     max_open = sysconf(_SC_OPEN_MAX);
     files = malloc(sizeof(struct spdk_file *) * max_open);
@@ -279,20 +277,20 @@ void hookfs_init(void) {
 }
 
 static bool hookfs_is_under_mountpoint(const char * abspath) {
-    return strncmp(abspath, g_mountpoint, strlen(g_mountpoint)) == 0;
+    return strncmp(abspath, g_mountpoint, g_mountpoint_strlen) == 0;
 }
 
-static int hookfs_open(const char * abspath, int oflag) {
+static int hookfs_open(const char * abspath, int oflag, int mflag) {
     struct spdk_file * file;
     int rc, fd;
 
-    fd = realfs.open("/dev/null", oflag);
+    fd = realfs.open("/dev/null", oflag, mflag);
     if (fd < 0) {
         SPDK_ERRLOG("obtaining a FD failed: %d (%s)\n", errno, spdk_strerror(errno));
         return fd;
     }
 
-    rc = spdk_fs_open_file(g_fs, g_channel, abspath, 0, &file);
+    rc = spdk_fs_open_file(g_fs, g_channel, abspath + g_mountpoint_strlen - 1, oflag, &file);
     if (rc != 0) {
         errno = ENOENT;
         return -rc;
@@ -308,16 +306,17 @@ int open(char const * path, int oflag, ...) {
     int mflag;
     char abspath[PATH_MAX];
 
+    va_start(args, oflag);
+    mflag = va_arg(args, int);
+
     if (!realfs.open) {
         realfs.open = load_symbol("open");
     }
-/*    if (realfs.initialized && !realpath(path, abspath) && hookfs_is_under_mountpoint(abspath)) {
-        return hookfs_open(abspath, oflag);
-    }*/
+    if (realfs.initialized && !realpath(path, abspath) && hookfs_is_under_mountpoint(abspath)) {
+        return hookfs_open(abspath, oflag, mflag);
+    }
 
 //    SPDK_ERRLOG(">>>>> in open: %s <<<<<<\n", path);
-    va_start(args, oflag);
-    mflag = va_arg(args, int);
     return realfs.open(path, oflag, mflag);
 }
 
@@ -416,7 +415,7 @@ static int hookfs_stat(const char * abspath, struct stat * stbuf)
     struct spdk_file_stat stat;
     int rc;
 
-    rc = spdk_fs_file_stat(g_fs, g_channel, abspath, &stat);
+    rc = spdk_fs_file_stat(g_fs, g_channel, abspath + g_mountpoint_strlen - 1, &stat);
     if (rc == 0) {
         stbuf->st_mode = S_IFREG | 0644;
         stbuf->st_nlink = 1;
@@ -509,8 +508,9 @@ typedef struct hookfs_dir {
 } hookfs_dir_t;
 
 static DIR * hookfs_opendir(const char * name) {
-    struct stat stbuf;
+    struct spdk_file_stat stat;
     hookfs_dir_t * ret;
+    int rc;
 
     ret = malloc(sizeof(hookfs_dir_t));
     if (!ret) {
@@ -518,14 +518,15 @@ static DIR * hookfs_opendir(const char * name) {
         return NULL;
     }
 
-    if (hookfs_stat(name, &stbuf) != 0) {
+    rc = spdk_fs_file_stat(g_fs, g_channel, name, &stat);
+    if (rc != 0) {
         errno = ENOENT;
         goto freedir;
     }
-    ret->__dd_size = stbuf.st_size;
-    ret->__dd_flags = stbuf.st_mode;
+    ret->__dd_size = stat.size;
+    ret->__dd_flags = 0777;
 
-    ret->__dd_len = HOOKFS_PAGE_SIZE;
+    ret->__dd_len = HOOKFS_PAGE_SIZE * 2;
     ret->__dd_buf = malloc(ret->__dd_len);
     if (!ret->__dd_buf) {
         errno = ENOMEM;
@@ -555,9 +556,9 @@ DIR * opendir(const char * name) {
         realfs.opendir = load_symbol("opendir");
     }
  
-/*    if (realfs.initialized && !realpath(name, abspath) && hookfs_is_under_mountpoint(abspath)) {
+    if (realfs.initialized && !realpath(name, abspath) && hookfs_is_under_mountpoint(abspath)) {
         return hookfs_opendir(abspath);
-    }*/
+    }
 
 //    SPDK_ERRLOG(">>>>> in opendir:%s <<<<<\n", name);
     return realfs.opendir(name);
@@ -565,18 +566,17 @@ DIR * opendir(const char * name) {
 
 static struct dirent * hookfs_readdir(DIR * _dirp) {
     hookfs_dir_t * dirp = (hookfs_dir_t *)_dirp;
-    struct dirent * ret = malloc(sizeof(struct dirent));
-    if (!ret) {
-        errno = ENOMEM;
-        return NULL;
-    }
+    struct dirent * ret = (struct dirent *)(dirp->__dd_buf + HOOKFS_PAGE_SIZE);
 
     if (dirp->__dd_seek >= dirp->__dd_loc) {
-        if ((dirp->__dd_loc += pread(dirp->__dd_fd, dirp->__dd_buf, dirp->__dd_len, dirp->__dd_seek)) < 0) {
+        long rc = spdk_file_read(files[dirp->__dd_fd], g_channel, dirp->__dd_buf, dirp->__dd_loc, HOOKFS_PAGE_SIZE);
+        if (rc < 0) {
             goto freedir;
         }
+        dirp->__dd_loc += rc;
     }
     strcpy(ret->d_name, dirp->__dd_buf + dirp->__dd_seek);
+    ret->d_type = DT_UNKNOWN;
     dirp->__dd_seek += strlen(ret->d_name) + 1;
 
     return ret;
@@ -597,6 +597,103 @@ struct dirent * readdir(DIR * _dirp) {
     }
 //    SPDK_ERRLOG(">>>>> in readdir <<<<<\n");
     return realfs.readdir(_dirp);
+}
+
+static int hookfs_mkdir(const char * abspath, mode_t m) {
+    struct spdk_file_stat stat, pstat;
+    const char * path = abspath + g_mountpoint_strlen;
+    const char * parent = dirname(path);
+    int rc;
+
+    if (strcmp(path, parent) != 0) {
+        rc = spdk_fs_file_stat(g_fs, g_channel, parent, &pstat);
+        if (rc != 0) {
+            errno = EACCES;
+            return -1;
+        }
+    }
+
+    rc = spdk_fs_file_stat(g_fs, g_channel, path, &stat);
+    if (rc == -ENOENT) {
+        struct spdk_file *file;
+        const char * base = basename(path);
+
+        rc = spdk_fs_create_file(g_fs, g_channel, path);
+        if (rc != 0) {
+            return -rc;
+        }
+
+        rc = spdk_fs_open_file(g_fs, g_channel, path, 0, &file);
+        if (rc != 0) {
+            return -rc;
+        }
+
+        rc = spdk_file_write(file, g_channel, ".\0..\0", 0, 5);
+        if (rc != 0) {
+            spdk_file_close(file, g_channel);
+            return -rc;
+        }
+
+        rc = spdk_file_close(file, g_channel);
+        if (rc != 0) {
+            return -rc;
+        }
+
+        if (strcmp(path, parent) == 0) {
+            return 0;
+        }
+
+        rc = spdk_fs_open_file(g_fs, g_channel, parent, 0, &file);
+        if (rc != 0) {
+            return -rc;
+        }
+
+        rc = spdk_file_write(file, g_channel, base, strlen(base), pstat.size);
+        if (rc != 0) {
+            spdk_file_close(file, g_channel);
+            return -rc;
+        }
+
+        rc = spdk_file_close(file, g_channel);
+        return rc;
+    }
+    errno = EEXIST;
+    return -1;
+}
+
+int mkdir(const char * name, mode_t m) {
+    char abspath[PATH_MAX];
+
+    if (!realfs.mkdir) {
+        realfs.mkdir = load_symbol("mkdir");
+    }
+
+    if (realfs.initialized && !realpath(name, abspath) && hookfs_is_under_mountpoint(abspath)) {
+        return hookfs_mkdir(abspath, m);
+    }
+
+    return realfs.mkdir(name, m);
+}
+
+int hookfs_closedir(DIR * _dirp) {
+    hookfs_dir_t * dirp = (hookfs_dir_t *)_dirp;
+    int rc = close(dirp->__dd_fd);
+    free(dirp->__dd_buf);
+    free(dirp);
+    return rc;
+}
+
+int closedir(DIR * _dirp) {
+    hookfs_dir_t * dirp = (hookfs_dir_t *)_dirp;
+    if (!realfs.closedir) {
+        realfs.closedir = load_symbol("closedir");
+    }
+
+    if (realfs.initialized && files[dirp->__dd_fd]) {
+        return hookfs_closedir(_dirp);
+    }
+//    SPDK_ERRLOG(">>>>> in closedir <<<<<\n");
+    return realfs.closedir(_dirp);
 }
 
 #if 0
