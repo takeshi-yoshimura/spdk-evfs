@@ -602,7 +602,7 @@ struct dirent * readdir(DIR * _dirp) {
 static int hookfs_mkdir(const char * abspath, mode_t m) {
     struct spdk_file_stat stat, pstat;
     const char * path = abspath + g_mountpoint_strlen;
-    const char * parent = dirname(path);
+    const char * parent = dirname((char *)path);
     int rc;
 
     if (strcmp(path, parent) != 0) {
@@ -616,7 +616,7 @@ static int hookfs_mkdir(const char * abspath, mode_t m) {
     rc = spdk_fs_file_stat(g_fs, g_channel, path, &stat);
     if (rc == -ENOENT) {
         struct spdk_file *file;
-        const char * base = basename(path);
+        const char * base = basename((char *)path);
 
         rc = spdk_fs_create_file(g_fs, g_channel, path);
         if (rc != 0) {
@@ -628,7 +628,7 @@ static int hookfs_mkdir(const char * abspath, mode_t m) {
             return -rc;
         }
 
-        rc = spdk_file_write(file, g_channel, ".\0..\0", 0, 5);
+        rc = spdk_file_write(file, g_channel, (void *)".\0..\0", 0, 5);
         if (rc != 0) {
             spdk_file_close(file, g_channel);
             return -rc;
@@ -648,7 +648,7 @@ static int hookfs_mkdir(const char * abspath, mode_t m) {
             return -rc;
         }
 
-        rc = spdk_file_write(file, g_channel, base, strlen(base), pstat.size);
+        rc = spdk_file_write(file, g_channel, (void *)base, strlen(base), pstat.size);
         if (rc != 0) {
             spdk_file_close(file, g_channel);
             return -rc;
@@ -675,7 +675,7 @@ int mkdir(const char * name, mode_t m) {
     return realfs.mkdir(name, m);
 }
 
-int hookfs_closedir(DIR * _dirp) {
+static int hookfs_closedir(DIR * _dirp) {
     hookfs_dir_t * dirp = (hookfs_dir_t *)_dirp;
     int rc = close(dirp->__dd_fd);
     free(dirp->__dd_buf);
