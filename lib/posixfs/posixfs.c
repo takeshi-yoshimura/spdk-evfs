@@ -79,7 +79,7 @@ static uint64_t * offsets;
 static long max_open;
 
 
-static pthread_t hookfs_thread;
+static pthread_t hookfs_thread, hookfs_thread2, hookfs_thread3;
 
 static struct real_fsiface {
     int initialized;
@@ -90,7 +90,8 @@ static struct real_fsiface {
     ssize_t (*pwrite)(int, const void *, size_t, off_t);
     off_t (*lseek)(int, off_t, int);
     int (*close)(int);
-    int (*stat)(const char *, struct stat *);
+    int (*__xstat)(int ver, const char *, struct stat64 *);
+    int (*__lxstat)(int ver, const char *, struct stat64 *);
     int (*fstat)(int, struct stat *);
     int (*posix_fadvise)(int, off_t, off_t, int);
     DIR * (*opendir)(const char *);
@@ -105,17 +106,19 @@ static int hookfs_mkdir(const char * abspath, mode_t m);
 static void
 start_hookfs_fn(void *arg1, void *arg2)
 {
-    DIR * dir;
     int rc;
     char dummy[PATH_MAX];
     snprintf(dummy, PATH_MAX - 1, "%s/", g_mountpoint);
+    hookfs_thread2 = pthread_self();
 
+    printf("test\n");
+    SPDK_ERRLOG("test\n");
     realfs.initialized = 1;
     spdk_smp_rmb();
     rc = hookfs_mkdir(dummy, 0755);
     if (rc != 0 && errno != EEXIST) {
         SPDK_ERRLOG("FS init failed: failed to create %s\n", g_mountpoint);
-        realfs.initialized = 0;
+        realfs.initialized = -1;
     }
 }
 
@@ -125,7 +128,9 @@ init_cb(void *ctx, struct spdk_filesystem *fs, int fserrno)
     struct spdk_event *event;
 
     g_fs = fs;
+    SPDK_ERRLOG("test2\n");
     g_channel = spdk_fs_alloc_io_channel_sync(g_fs);
+    SPDK_ERRLOG("test3\n");
     event = spdk_event_allocate(1, start_hookfs_fn, NULL, NULL);
     spdk_event_call(event);
 }
@@ -168,6 +173,8 @@ hookfs_run(void *arg1, void *arg2)
 static void
 shutdown_cb(void *ctx, int fserrno)
 {
+    pthread_kill(hookfs_thread2, SIGINT);
+    pthread_kill(hookfs_thread3, SIGINT);
     spdk_fs_free_io_channel(g_channel);
     spdk_app_stop(0);
 }
@@ -195,6 +202,7 @@ static void * start_app(void * args) {
     struct spdk_app_opts opts = {};
     int rc;
 
+    hookfs_thread3 = pthread_self();
     spdk_app_opts_init(&opts);
     opts.name = program_invocation_short_name;
     opts.config_file = getenv(HOOKFS_SPDK_CONF_ENV);
@@ -215,13 +223,12 @@ static void * start_app(void * args) {
     if (!rc) {
         spdk_app_fini();
     }
+    pthread_exit(0);
     return NULL;
 }
 
 static void init_fsiface(void) {
-    int rc = 0;
     char * mp;
-    char abspath[PATH_MAX];
 
     g_bdev_name = getenv(HOOKFS_SPDK_BDEV_ENV);
     mp = getenv(HOOKFS_MOUNT_POINT_ENV);
@@ -267,22 +274,23 @@ static void init_fsiface(void) {
     pthread_create(&hookfs_thread, NULL, start_app, NULL);
 }
 
-__attribute__((constructor, used))
+__attribute__((constructor, used)) void hookfs_init(void);
+
 void hookfs_init(void) {
     if (!realfs.initialized) {
         init_fsiface();
-        while (!realfs.initialized) {
+        while (realfs.initialized == 0) {
             sleep(1);
+        }
+        if (realfs.initialized < 0) {
+            SPDK_ERRLOG("error!!!\n");
         }
         SPDK_ERRLOG("init!!!!!\n");
     }
 }
 
-__attribute__((destructor, used))
+__attribute__((destructor, used)) void hookfs_fini(void);
 void hookfs_fini(void) {
-    if (realfs.initialized) {
-        pthread_join(hookfs_thread, NULL);
-    }
 }
 
 static bool hookfs_is_under_mountpoint(const char * abspath) {
@@ -313,7 +321,7 @@ static int hookfs_open(const char * abspath, int oflag, int mflag) {
 int open(char const * path, int oflag, ...) {
     va_list args;
     int mflag;
-    char abspath[PATH_MAX];
+//    char abspath[PATH_MAX];
 
     va_start(args, oflag);
     mflag = va_arg(args, int);
@@ -342,9 +350,9 @@ int close(int fd) {
     if (!realfs.close) {
         realfs.close = load_symbol("close");
     }
-    if (realfs.initialized && files[fd]) {
+/*    if (realfs.initialized && files[fd]) {
         return hookfs_release(fd);
-    }
+    }*/
 //    SPDK_ERRLOG(">>>>> in close <<<<<<\n");
     return realfs.close(fd);
 }
@@ -359,13 +367,13 @@ ssize_t read(int fd, void * buf, size_t count) {
         realfs.read = load_symbol("read");
     }
 
-    if (realfs.initialized && files[fd]) {
+/*    if (realfs.initialized && files[fd]) {
         int len = hookfs_read(fd, buf, count, offsets[fd]);
         if (len > 0) {
             offsets[fd] += len;
         }
         return len;
-    }
+    }*/
 //    SPDK_ERRLOG(">>>>> in read <<<<<\n");
     return realfs.read(fd, buf, count);
 }
@@ -374,9 +382,9 @@ ssize_t pread(int fd, void * buf, size_t count, off_t offset) {
     if (!realfs.pread) {
         realfs.pread = load_symbol("pread");
     }
-    if (realfs.initialized && files[fd]) {
+/*    if (realfs.initialized && files[fd]) {
         return hookfs_read(fd, buf, count, offset);
-    }
+    }*/
 //    SPDK_ERRLOG(">>>>> in pread <<<<<\n");
     return realfs.pread(fd, buf, count, offset);
 }
@@ -396,13 +404,13 @@ ssize_t write(int fd, const void * buf, size_t count) {
     if (!realfs.write) {
         realfs.write = load_symbol("write");
     }
-    if (realfs.initialized && files[fd]) {
+/*    if (realfs.initialized && files[fd]) {
         int len = hookfs_write(fd, buf, count, offsets[fd]);
         if (len > 0) {
             offsets[fd] += len;
         }
         return len;
-    }
+    }*/
 //    SPDK_ERRLOG(">>>>> in write <<<<<\n");
     return realfs.write(fd, buf, count);
 }
@@ -412,9 +420,9 @@ ssize_t pwrite(int fd, const void * buf, size_t count, off_t offset) {
         realfs.pwrite = load_symbol("pwrite");
     }
 
-    if (realfs.initialized && files[fd]) {
+/*    if (realfs.initialized && files[fd]) {
         return hookfs_write(fd, buf, count, offset);
-    }
+    }*/
 //    SPDK_ERRLOG(">>>>> in pwrite <<<<<\n");
     return realfs.pwrite(fd, buf, count, offset);
 }
@@ -425,6 +433,7 @@ static int hookfs_stat(const char * abspath, struct stat * stbuf)
     int rc;
 
     rc = spdk_fs_file_stat(g_fs, g_channel, abspath + g_mountpoint_strlen - 1, &stat);
+    SPDK_ERRLOG(">>>>> in stat:%s,%d <<<<<\n", abspath, rc);
     if (rc == 0) {
         stbuf->st_mode = S_IFREG | 0644;
         stbuf->st_nlink = 1;
@@ -434,26 +443,46 @@ static int hookfs_stat(const char * abspath, struct stat * stbuf)
     return rc;
 }
 
-int stat(const char * path, struct stat * stbuf) {
+int __xstat64(int ver, const char * path, struct stat64 * stbuf) {
     char abspath[PATH_MAX];
-    if (!realfs.stat) {
-        realfs.stat = load_symbol("stat");
+    if (!realfs.__xstat) {
+        realfs.__xstat = load_symbol("__xstat64");
     }
+
+    realpath(path, abspath);
+    SPDK_ERRLOG(">>>>> in __xstat:%s,%s,%d <<<<<\n", path, abspath, hookfs_is_under_mountpoint(abspath));
     if (realfs.initialized && !realpath(path, abspath) && hookfs_is_under_mountpoint(abspath)) {
         return hookfs_stat(abspath, stbuf);
     }
 
 //    SPDK_ERRLOG(">>>>> in stat <<<<<\n");
-    return realfs.stat(path, stbuf);
+    return realfs.__xstat(ver, path, stbuf);
+}
+
+int __lxstat64(int ver, const char * path, struct stat64 * stbuf) {
+    char abspath[PATH_MAX];
+    if (!realfs.__lxstat) {
+        realfs.__lxstat = load_symbol("__lxstat64");
+    }
+
+    realpath(path, abspath);
+    SPDK_ERRLOG(">>>>> in __lxstat:%s,%s,%d <<<<<\n", path, abspath, hookfs_is_under_mountpoint(abspath));
+    if (realfs.initialized && !realpath(path, abspath) && hookfs_is_under_mountpoint(abspath)) {
+        return hookfs_stat(abspath, stbuf);
+    }
+
+//    SPDK_ERRLOG(">>>>> in stat <<<<<\n");
+    return realfs.__lxstat(ver, path, stbuf);
+
 }
 
 int fstat(int fd, struct stat * stbuf) {
     if (!realfs.fstat) {
         realfs.fstat = load_symbol("fstat");
     }
-    if (realfs.initialized && files[fd]) {
+/*    if (realfs.initialized && files[fd]) {
         return stat(spdk_file_get_name(files[fd]), stbuf);
-    }
+    }*/
 //    SPDK_ERRLOG(">>>>> in fstat <<<<<\n");
     return realfs.fstat(fd, stbuf);
 }
@@ -615,6 +644,7 @@ static int hookfs_mkdir(const char * abspath, mode_t m) {
     int rc;
 
     if (strcmp(path, parent) != 0) {
+    SPDK_ERRLOG("mkdir: stat1\n");
         rc = spdk_fs_file_stat(g_fs, g_channel, parent, &pstat);
         if (rc != 0) {
             errno = EACCES;
@@ -622,27 +652,33 @@ static int hookfs_mkdir(const char * abspath, mode_t m) {
         }
     }
 
+    SPDK_ERRLOG("mkdir: stat2\n");
+    printf("mkdir: stat2\n");
     rc = spdk_fs_file_stat(g_fs, g_channel, path, &stat);
     if (rc == -ENOENT) {
         struct spdk_file *file;
         const char * base = basename((char *)path);
 
+    SPDK_ERRLOG("mkdir: create1\n");
         rc = spdk_fs_create_file(g_fs, g_channel, path);
         if (rc != 0) {
             return -rc;
         }
 
+    SPDK_ERRLOG("mkdir: open1\n");
         rc = spdk_fs_open_file(g_fs, g_channel, path, 0, &file);
         if (rc != 0) {
             return -rc;
         }
 
+    SPDK_ERRLOG("mkdir: write1\n");
         rc = spdk_file_write(file, g_channel, (void *)".\0..\0", 0, 5);
         if (rc != 0) {
             spdk_file_close(file, g_channel);
             return -rc;
         }
 
+    SPDK_ERRLOG("mkdir: close1\n");
         rc = spdk_file_close(file, g_channel);
         if (rc != 0) {
             return -rc;
@@ -652,20 +688,24 @@ static int hookfs_mkdir(const char * abspath, mode_t m) {
             return 0;
         }
 
+    SPDK_ERRLOG("mkdir: open2\n");
         rc = spdk_fs_open_file(g_fs, g_channel, parent, 0, &file);
         if (rc != 0) {
             return -rc;
         }
 
+    SPDK_ERRLOG("mkdir: write2\n");
         rc = spdk_file_write(file, g_channel, (void *)base, strlen(base), pstat.size);
         if (rc != 0) {
             spdk_file_close(file, g_channel);
             return -rc;
         }
 
+    SPDK_ERRLOG("mkdir: close2\n");
         rc = spdk_file_close(file, g_channel);
         return rc;
     }
+    SPDK_ERRLOG("mkdir: fin\n");
     errno = EEXIST;
     return -1;
 }
