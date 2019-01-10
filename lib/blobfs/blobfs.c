@@ -506,6 +506,7 @@ spdk_fs_init(struct spdk_bs_dev *dev, struct spdk_blobfs_opts *opt,
 	if (opt) {
 		opts.cluster_sz = opt->cluster_sz;
 	}
+    opts.num_md_pages = 1;
 	spdk_bs_init(dev, &opts, init_cb, req);
 }
 

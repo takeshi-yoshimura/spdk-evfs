@@ -8,6 +8,7 @@ DEPS_SPDK="-lspdk_log -lspdk_trace -lspdk_util -lspdk_json -lspdk_rpc -lspdk_jso
 #DEPS_SPDK=`find $SPDKDIR -name '*.a' | grep -v vbdev | grep -v posixfs | grep -v bdev_nvme`
 DEPS_DPDK="-Wl,--version-script,$cur/versions.ldscript -Wl,--whole-archive -Wl,-Bstatic -L$NUMADIR -lnuma -Wl,-Bdynamic -Wl,--no-whole-archive -Wl,--start-group -Wl,--whole-archive -L$DPDKDIR -lrte_eal -lrte_mempool -lrte_ring -lrte_mempool_ring -lrte_pci -lrte_bus_pci -Wl,--end-group -Wl,--no-whole-archive"
 
-cmd="gcc -shared -o $OUTDIR/libposixfs.so -fPIC $DEPS_DPDK -Wl,--whole-archive -L$SPDKDIR $DEPS_SPDK -lspdk_bdev_nvme -lspdk_blobfs -lspdk_posixfs -Wl,--no-whole-archive -luuid -lrt -lpthread -ldl"
+#cmd="gcc -fPIC -Wl,'--no-as-needed' -shared -o $OUTDIR/libposixfs.so $DEPS_DPDK -Wl,--whole-archive -L$SPDKDIR $DEPS_SPDK -lspdk_bdev_nvme -lspdk_blobfs -lspdk_posixfs -Wl,--no-whole-archive -luuid -lrt -lpthread -ldl"
+cmd="gcc -fPIC -shared -o $OUTDIR/libposixfs.so $DEPS_DPDK -Wl,--whole-archive -L$SPDKDIR $DEPS_SPDK -lspdk_bdev_nvme -lspdk_blobfs -lspdk_posixfs -Wl,--no-whole-archive -luuid -lrt -lpthread -ldl"
 echo $cmd
 $cmd

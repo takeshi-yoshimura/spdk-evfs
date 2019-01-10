@@ -5,6 +5,7 @@ export HOOKFS_SPDK_CONF=/home/tyos/data/src/mybench/capispdk/spdkconf/s7fp1tyos/
 export HOOKFS_BDEV=Nvme2n1
 export HOOKFS_MOUNT_POINT=/spdk
 #export HOOKFS_LOG_ARG="thread"
-export HOOKFS_LOG_ARG="all"
+#export HOOKFS_LOG_ARG="all"
+#export LD_DEBUG=all
 export LD_PRELOAD=$POSIXFSLIB
 $@
