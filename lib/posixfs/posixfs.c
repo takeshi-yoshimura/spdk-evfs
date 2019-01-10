@@ -352,8 +352,8 @@ static bool hookfs_is_under_mountpoint(const char * abspath) {
 static int hookfs_open(const char * abspath, int oflag, int mflag) {
     struct spdk_file * file;
     int rc, fd;
+    const char * path = (*(abspath + g_mountpoint_strlen) == 0) ? "/": abspath + g_mountpoint_strlen;
 
-    SPDK_ERRLOG("test: %s\n", abspath);
 
     fd = realfs.open("/dev/null", oflag, mflag);
     if (fd < 0) {
@@ -361,7 +361,8 @@ static int hookfs_open(const char * abspath, int oflag, int mflag) {
         return fd;
     }
 
-    rc = spdk_fs_open_file(g_fs, g_channel, abspath + g_mountpoint_strlen - 1, oflag, &file);
+    rc = spdk_fs_open_file(g_fs, g_channel, path, oflag, &file);
+    SPDK_ERRLOG("open: %s (%s), %d\n", abspath, path, rc);
     if (rc != 0) {
         errno = ENOENT;
         return -rc;
@@ -481,15 +482,57 @@ ssize_t pwrite(int fd, const void * buf, size_t count, off_t offset) {
     return realfs.pwrite(fd, buf, count, offset);
 }
 
+static DIR * hookfs_opendir(const char * name);
+static struct dirent * hookfs_readdir(DIR * _dirp);
+static int hookfs_closedir(DIR * _dirp);
+
+static int hookfs_is_dir(const char * abspath)
+{
+    char * duppath = strdup(abspath);
+    char * parent = dirname(duppath);
+    char * duppath2 = strdup(abspath);
+    char * base = basename(duppath2);
+    int rc;
+    DIR * dir;
+    struct dirent * d;
+
+    if (strlen(abspath) == 1 && *abspath == '/') {
+        free(duppath);
+        free(duppath2);
+        return 1;
+    }
+
+    dir = hookfs_opendir(parent);
+    if (!dir) {
+        free(duppath);
+        free(duppath2);
+        SPDK_ERRLOG("orphan file?: %s\n", abspath);
+        return 0;
+    }
+
+    rc = 0;
+    while ((d = hookfs_readdir(dir)) != NULL) {
+        if (strcmp(d->d_name, base) == 0) {
+            rc = d->d_type == DT_DIR;
+            break;
+        }
+    }
+    hookfs_closedir(dir);
+    free(duppath);
+    free(duppath2);
+    return rc;
+}
+
 static int hookfs_stat(const char * abspath, struct stat * stbuf)
 {
     struct spdk_file_stat stat;
     int rc;
+    const char * path = (*(abspath + g_mountpoint_strlen) == 0) ? "/": abspath + g_mountpoint_strlen;
 
-    rc = spdk_fs_file_stat(g_fs, g_channel, abspath + g_mountpoint_strlen - 1, &stat);
-    SPDK_ERRLOG(">>>>> in stat:%s,%d <<<<<\n", abspath + g_mountpoint_strlen - 1, rc);
+    rc = spdk_fs_file_stat(g_fs, g_channel, path, &stat);
+    SPDK_ERRLOG(">>>>> in stat:%s (%s), %d <<<<<\n", abspath, path, rc);
     if (rc == 0) {
-        stbuf->st_mode = S_IFREG | 0644;
+        stbuf->st_mode = (!hookfs_is_dir(abspath) ? S_IFREG : S_IFDIR) | 0644;
         stbuf->st_nlink = 1;
         stbuf->st_size = stat.size;
     }
@@ -599,9 +642,11 @@ typedef struct hookfs_dir {
     int __dd_flags; /* flags for readdir */
 } hookfs_dir_t;
 
+
 static DIR * hookfs_opendir(const char * name) {
     struct spdk_file_stat stat;
     hookfs_dir_t * ret;
+    const char * path = (*(name + g_mountpoint_strlen) == 0) ? "/": name + g_mountpoint_strlen;
     int rc;
 
     ret = malloc(sizeof(hookfs_dir_t));
@@ -610,12 +655,13 @@ static DIR * hookfs_opendir(const char * name) {
         return NULL;
     }
 
-    rc = spdk_fs_file_stat(g_fs, g_channel, name, &stat);
+    rc = spdk_fs_file_stat(g_fs, g_channel, path, &stat);
+    SPDK_ERRLOG("opendir: %s (%s), %d\n", name, path, rc);
     if (rc != 0) {
         errno = ENOENT;
         goto freedir;
     }
-    ret->__dd_size = stat.size;
+    ret->__dd_size = stat.size - 1;
     ret->__dd_flags = 0777;
 
     ret->__dd_len = HOOKFS_PAGE_SIZE * 2;
@@ -661,6 +707,9 @@ static struct dirent * hookfs_readdir(DIR * _dirp) {
     hookfs_dir_t * dirp = (hookfs_dir_t *)_dirp;
     struct dirent * ret = (struct dirent *)(dirp->__dd_buf + HOOKFS_PAGE_SIZE);
 
+    if (dirp->__dd_seek >= dirp->__dd_size) {
+        return NULL;
+    }
     if (dirp->__dd_seek >= dirp->__dd_loc) {
         long rc = spdk_file_read(files[dirp->__dd_fd], g_channel, dirp->__dd_buf, dirp->__dd_loc, HOOKFS_PAGE_SIZE);
         if (rc < 0) {
@@ -668,9 +717,11 @@ static struct dirent * hookfs_readdir(DIR * _dirp) {
         }
         dirp->__dd_loc += rc;
     }
-    strcpy(ret->d_name, dirp->__dd_buf + dirp->__dd_seek);
-    ret->d_type = DT_UNKNOWN;
-    dirp->__dd_seek += strlen(ret->d_name) + 1;
+    memset(ret, 0, sizeof(struct dirent));
+    ret->d_type = *(unsigned char *)(dirp->__dd_buf + dirp->__dd_seek);
+    strcpy(ret->d_name, dirp->__dd_buf + dirp->__dd_seek + sizeof(unsigned char));
+    SPDK_ERRLOG("readdir: %s, %d, %d\n", ret->d_name, ret->d_type, dirp->__dd_seek);
+    dirp->__dd_seek += strlen(ret->d_name) + sizeof(unsigned char) + 1;
 
     return ret;
 
@@ -692,65 +743,103 @@ struct dirent * readdir(DIR * _dirp) {
     return realfs.readdir(_dirp);
 }
 
+static int __hookfs_addfile(const char * path, const char *filename, unsigned char d_type) {
+    struct spdk_file *file;
+    int rc;
+    char buf[PATH_MAX + 2];
+    struct spdk_file_stat stat;
+
+    if (strlen(filename) == 0 || strlen(path) == 0 || !(d_type == DT_DIR || d_type == DT_REG)) {
+        SPDK_ERRLOG("cannot add file %s, d_type=%u in %s\n", filename, d_type, path);
+        return -1;
+    }
+
+    rc = spdk_fs_file_stat(g_fs, g_channel, path, &stat);
+    if (rc == -ENOENT) {
+        rc = spdk_fs_create_file(g_fs, g_channel, path);
+        if (rc != 0) {
+            SPDK_ERRLOG("failed to create file: %s, %d\n", path, rc);
+            return -1;
+        }
+        stat.size = 0;
+    }
+
+    rc = spdk_fs_open_file(g_fs, g_channel, path, 0, &file);
+    if (rc != 0) {
+        return -rc;
+    }
+
+    snprintf(buf, PATH_MAX - 1, "%c%s%c", (char)d_type, filename, 0);
+    SPDK_ERRLOG("addfile: %s, %d, %d, %d\n", filename, d_type, stat.size, strlen(buf) + 1);
+    rc = spdk_file_write(file, g_channel, (void *)buf, stat.size, strlen(buf) + 1);
+    if (rc != 0) {
+        spdk_file_close(file, g_channel);
+        return -rc;
+    }
+
+    rc = spdk_file_close(file, g_channel);
+    if (rc != 0) {
+        return -rc;
+    }
+    return 0;
+}
+
 static int hookfs_mkdir(const char * abspath, mode_t m) {
     struct spdk_file_stat stat, pstat;
-    const char * path = abspath + g_mountpoint_strlen;
-    const char * parent = dirname((char *)path);
+    char * path = (*(abspath + g_mountpoint_strlen) == 0) ? "/": abspath + g_mountpoint_strlen;
+    char * duppath = strdup(path);
+    char * parent = dirname(duppath);
     int rc;
 
+    SPDK_ERRLOG("mkdir: %s (%s) under %s\n", path, abspath, parent);
     if (strcmp(path, parent) != 0) {
         rc = spdk_fs_file_stat(g_fs, g_channel, parent, &pstat);
+        SPDK_ERRLOG("check: %s, %d\n", parent, rc);
         if (rc != 0) {
             errno = EACCES;
+            free(duppath);
             return -1;
         }
     }
 
     rc = spdk_fs_file_stat(g_fs, g_channel, path, &stat);
     if (rc == -ENOENT) {
-        struct spdk_file *file;
-        const char * base = basename((char *)path);
+        char * duppath2 = strdup(path);
+        char * base = basename(duppath2);
 
-        rc = spdk_fs_create_file(g_fs, g_channel, path);
-        if (rc != 0) {
-            return -rc;
+        SPDK_ERRLOG("mkdir: %s\n", path);
+
+        if (__hookfs_addfile(path, ".", DT_DIR)) {
+            SPDK_ERRLOG("failed to create '.' in %s\n", path);
+            free(duppath);
+            free(duppath2);
+            return -1;
         }
-
-        rc = spdk_fs_open_file(g_fs, g_channel, path, 0, &file);
-        if (rc != 0) {
-            return -rc;
-        }
-
-        rc = spdk_file_write(file, g_channel, (void *)".\0..\0", 0, 5);
-        if (rc != 0) {
-            spdk_file_close(file, g_channel);
-            return -rc;
-        }
-
-        rc = spdk_file_close(file, g_channel);
-        if (rc != 0) {
-            return -rc;
+        if (__hookfs_addfile(path, "..", DT_DIR)) {
+            SPDK_ERRLOG("failed to create '..' in %s\n", path);
+            free(duppath);
+            free(duppath2);
+            return -1;
         }
 
         if (strcmp(path, parent) == 0) {
+            free(duppath);
+            free(duppath2);
             return 0;
         }
 
-        rc = spdk_fs_open_file(g_fs, g_channel, parent, 0, &file);
-        if (rc != 0) {
-            return -rc;
+        if (__hookfs_addfile(parent, base, DT_DIR)) {
+            SPDK_ERRLOG("failed to create '%s' in %s\n", base, path);
+            free(duppath);
+            free(duppath2);
+            return -1;
         }
-
-        rc = spdk_file_write(file, g_channel, (void *)base, strlen(base), pstat.size);
-        if (rc != 0) {
-            spdk_file_close(file, g_channel);
-            return -rc;
-        }
-
-        rc = spdk_file_close(file, g_channel);
-        return rc;
+        free(duppath);
+        free(duppath2);
+        return 0;
     }
     errno = EEXIST;
+    free(duppath);
     return -1;
 }
 
