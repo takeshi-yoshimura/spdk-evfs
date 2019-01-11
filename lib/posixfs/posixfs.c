@@ -350,34 +350,34 @@ static bool hookfs_is_under_mountpoint(const char * abspath) {
     return strncmp(abspath, g_mountpoint, g_mountpoint_strlen) == 0;
 }
 
-static int __hookfs_addfile(const char * path, const char *filename, unsigned char d_type) {
+static int __hookfs_addfile(const char * blobfspath, const char *filename, unsigned char d_type) {
     struct spdk_file *file;
     int rc;
     char buf[PATH_MAX + 2];
     struct spdk_file_stat stat;
 
-    if (strlen(filename) == 0 || strlen(path) == 0 || !(d_type == DT_DIR || d_type == DT_REG)) {
-        SPDK_ERRLOG("cannot add file %s, d_type=%u in %s\n", filename, d_type, path);
+    if (strlen(filename) == 0 || strlen(blobfspath) == 0 || !(d_type == DT_DIR || d_type == DT_REG)) {
+        SPDK_ERRLOG("cannot add file %s, d_type=%u in %s\n", filename, d_type, blobfspath);
         return -1;
     }
 
-    rc = spdk_fs_file_stat(g_fs, g_channel, path, &stat);
+    rc = spdk_fs_file_stat(g_fs, g_channel, blobfspath, &stat);
     if (rc == -ENOENT) {
-        rc = spdk_fs_create_file(g_fs, g_channel, path);
+        rc = spdk_fs_create_file(g_fs, g_channel, blobfspath);
         if (rc != 0) {
-            SPDK_ERRLOG("failed to create file: %s, %d\n", path, rc);
+            SPDK_ERRLOG("failed to create file: %s, %d\n", blobfspath, rc);
             return -1;
         }
         stat.size = 0;
     }
 
-    rc = spdk_fs_open_file(g_fs, g_channel, path, 0, &file);
+    rc = spdk_fs_open_file(g_fs, g_channel, blobfspath, 0, &file);
     if (rc != 0) {
         return -rc;
     }
 
     snprintf(buf, PATH_MAX - 1, "%c%s%c", (char)d_type, filename, 0);
-    SPDK_ERRLOG("addfile: %s, %u, %lu, %lu in %s\n", filename, d_type, stat.size, strlen(buf) + 1, path);
+    SPDK_ERRLOG("addfile: %s, %u, %lu, %lu in %s\n", filename, d_type, stat.size, strlen(buf) + 1, blobfspath);
     rc = spdk_file_write(file, g_channel, (void *)buf, stat.size, strlen(buf) + 1);
     if (rc != 0) {
         spdk_file_close(file, g_channel);
@@ -403,7 +403,7 @@ static int __hookfs_open(const char * blobfspath, int oflag, int mflag)
         return -1;
     }
 
-    fd = realfs.open("/dev/null", oflag, mflag);
+    fd = realfs.open("/dev/null", O_RDWR, mflag);
     if (fd < 0) {
         SPDK_ERRLOG("obtaining a FD failed: %d (%s)\n", errno, spdk_strerror(errno));
         return fd;
@@ -571,10 +571,10 @@ ssize_t pwrite(int fd, const void * buf, size_t count, off_t offset) {
         realfs.pwrite = load_symbol("pwrite");
     }
 
+//    SPDK_ERRLOG(">>>>> in pwrite <<<<<\n");
     if (realfs.initialized && files[fd]) {
         return hookfs_write(fd, buf, count, offset);
     }
-//    SPDK_ERRLOG(">>>>> in pwrite <<<<<\n");
     return realfs.pwrite(fd, buf, count, offset);
 }
 
@@ -603,7 +603,7 @@ static int hookfs_is_dir(const char * blobfspath)
         SPDK_ERRLOG("not found %s in %s, %s, %s, %s\n", blobfspath, parent, duppath, duppath2, base);
         free(duppath);
         free(duppath2);
-        return 0;
+        return -1;
     }
 
     rc = 0;
@@ -648,12 +648,16 @@ int __xstat(int ver, const char * path, struct stat * stbuf) {
     }
 
 //  SPDK_ERRLOG(">>>>> in __xstat:%s,%s,%d <<<<<\n", path, abspath, hookfs_is_under_mountpoint(abspath));
-    if (realfs.initialized && !normalizepath(path, abspath) && hookfs_is_under_mountpoint(abspath)) {
-        return hookfs_stat(abspath, stbuf);
+    if (realfs.initialized && !normalizepath(path, abspath)) {
+        if (hookfs_is_under_mountpoint(abspath)) {
+            return hookfs_stat(abspath, stbuf);
+        } else if (strcmp(abspath, "/") == 0) {
+            return realfs.__xstat(ver, abspath, stbuf);
+        }
     }
 
 //    SPDK_ERRLOG(">>>>> in stat <<<<<\n");
-    return realfs.__xstat(ver, abspath, stbuf);
+    return realfs.__xstat(ver, path, stbuf);
 }
 
 int __lxstat(int ver, const char * path, struct stat * stbuf) {
@@ -662,10 +666,13 @@ int __lxstat(int ver, const char * path, struct stat * stbuf) {
         realfs.__lxstat = load_symbol("__lxstat");
     }
 
-    normalizepath(path, abspath);
  //   SPDK_ERRLOG(">>>>> in __lxstat:%s,%s,%d <<<<<\n", path, abspath, hookfs_is_under_mountpoint(abspath));
-    if (realfs.initialized && !normalizepath(path, abspath) && hookfs_is_under_mountpoint(abspath)) {
-        return hookfs_stat(abspath, stbuf);
+    if (realfs.initialized && !normalizepath(path, abspath)) {
+        if (hookfs_is_under_mountpoint(abspath)) {
+            return hookfs_stat(abspath, stbuf);
+        } else if (strcmp(abspath, "/") == 0) {
+            return realfs.__lxstat(ver, abspath, stbuf);
+        }
     }
 
 //    SPDK_ERRLOG(">>>>> in stat <<<<<\n");
@@ -857,62 +864,64 @@ struct dirent * readdir(DIR * _dirp) {
 }
 
 static int hookfs_mkdir(const char * abspath, mode_t m) {
-    struct spdk_file_stat stat, pstat;
-    const char * path = (*(abspath + g_mountpoint_strlen) == 0) ? "/": abspath + g_mountpoint_strlen;
-    char * duppath = strdup(path);
+    struct spdk_file_stat stat;
+    const char * blobfspath = (*(abspath + g_mountpoint_strlen) == 0) ? "/": abspath + g_mountpoint_strlen;
+    char * duppath = strdup(blobfspath);
     char * parent = dirname(duppath);
+    char * duppath2 = strdup(blobfspath);
+    char * base = basename(duppath2);
     int rc;
 
-    SPDK_ERRLOG("mkdir: %s (%s) under %s\n", path, abspath, parent);
-    if (strcmp(path, parent) != 0) {
-        rc = spdk_fs_file_stat(g_fs, g_channel, parent, &pstat);
-        SPDK_ERRLOG("check: %s, %d\n", parent, rc);
-        if (rc != 0) {
+    SPDK_ERRLOG("mkdir: %s (%s) under %s\n", blobfspath, abspath, parent);
+    if (strcmp(blobfspath, parent) != 0) {
+        rc = hookfs_is_dir(parent);
+        SPDK_ERRLOG("hookfs_is_dir: %s, %d\n", parent, rc);
+        if (rc == 0) {
             errno = EACCES;
-            free(duppath);
-            return -1;
+            rc = -1;
+            goto fin;
+        } else if (rc < 0) {
+            errno = -rc;
+            rc = -1;
+            goto fin;
         }
     }
 
-    rc = spdk_fs_file_stat(g_fs, g_channel, path, &stat);
+    rc = spdk_fs_file_stat(g_fs, g_channel, blobfspath, &stat);
     if (rc == -ENOENT) {
-        char * duppath2 = strdup(path);
-        char * base = basename(duppath2);
+        SPDK_ERRLOG("mkdir: %s\n", blobfspath);
 
-        SPDK_ERRLOG("mkdir: %s\n", path);
-
-        if (__hookfs_addfile(path, ".", DT_DIR)) {
-            SPDK_ERRLOG("failed to create '.' in %s\n", path);
-            free(duppath);
-            free(duppath2);
-            return -1;
+        if (__hookfs_addfile(blobfspath, ".", DT_DIR)) {
+            SPDK_ERRLOG("failed to create '.' in %s\n", blobfspath);
+            rc = -1;
+            goto fin;
         }
-        if (__hookfs_addfile(path, "..", DT_DIR)) {
-            SPDK_ERRLOG("failed to create '..' in %s\n", path);
-            free(duppath);
-            free(duppath2);
-            return -1;
+        if (__hookfs_addfile(blobfspath, "..", DT_DIR)) {
+            SPDK_ERRLOG("failed to create '..' in %s\n", blobfspath);
+            rc = -1;
+            goto fin;
         }
 
-        if (strcmp(path, parent) == 0) {
-            free(duppath);
-            free(duppath2);
-            return 0;
+        if (strcmp(blobfspath, parent) == 0) {
+           rc = 0;
+           goto fin;
         }
 
         if (__hookfs_addfile(parent, base, DT_DIR)) {
-            SPDK_ERRLOG("failed to create '%s' in %s\n", base, path);
-            free(duppath);
-            free(duppath2);
-            return -1;
+            SPDK_ERRLOG("failed to create '%s' in %s\n", base, parent);
+            errno = ENOENT;
+            rc = -1;
+        } else {
+            rc = 0;
         }
-        free(duppath);
-        free(duppath2);
-        return 0;
+    } else {
+        rc = -1;
+        errno = EEXIST;
     }
-    errno = EEXIST;
+fin:
     free(duppath);
-    return -1;
+    free(duppath2);
+    return rc;
 }
 
 int mkdir(const char * name, mode_t m) {
