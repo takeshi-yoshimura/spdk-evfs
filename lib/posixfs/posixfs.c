@@ -133,6 +133,7 @@ static pthread_t hookfs_thread, hookfs_thread2, hookfs_thread3;
 static struct real_fsiface {
     int initialized;
     int (*open)(char const *, int, ...);
+    int (*creat)(const char *, mode_t);
     ssize_t (*read)(int, void *, size_t);
     ssize_t (*write)(int, const void *, size_t);
     ssize_t (*pread)(int, void *, size_t, off_t);
@@ -349,10 +350,58 @@ static bool hookfs_is_under_mountpoint(const char * abspath) {
     return strncmp(abspath, g_mountpoint, g_mountpoint_strlen) == 0;
 }
 
+static int __hookfs_addfile(const char * path, const char *filename, unsigned char d_type) {
+    struct spdk_file *file;
+    int rc;
+    char buf[PATH_MAX + 2];
+    struct spdk_file_stat stat;
+
+    if (strlen(filename) == 0 || strlen(path) == 0 || !(d_type == DT_DIR || d_type == DT_REG)) {
+        SPDK_ERRLOG("cannot add file %s, d_type=%u in %s\n", filename, d_type, path);
+        return -1;
+    }
+
+    rc = spdk_fs_file_stat(g_fs, g_channel, path, &stat);
+    if (rc == -ENOENT) {
+        rc = spdk_fs_create_file(g_fs, g_channel, path);
+        if (rc != 0) {
+            SPDK_ERRLOG("failed to create file: %s, %d\n", path, rc);
+            return -1;
+        }
+        stat.size = 0;
+    }
+
+    rc = spdk_fs_open_file(g_fs, g_channel, path, 0, &file);
+    if (rc != 0) {
+        return -rc;
+    }
+
+    snprintf(buf, PATH_MAX - 1, "%c%s%c", (char)d_type, filename, 0);
+    SPDK_ERRLOG("addfile: %s, %u, %lu, %lu in %s\n", filename, d_type, stat.size, strlen(buf) + 1, path);
+    rc = spdk_file_write(file, g_channel, (void *)buf, stat.size, strlen(buf) + 1);
+    if (rc != 0) {
+        spdk_file_close(file, g_channel);
+        return -rc;
+    }
+
+    rc = spdk_file_close(file, g_channel);
+    if (rc != 0) {
+        return -rc;
+    }
+    return 0;
+}
+
 static int __hookfs_open(const char * blobfspath, int oflag, int mflag)
 {
     struct spdk_file * file;
     int rc, fd;
+    int creating = 0;
+
+    if ((oflag & O_TRUNC) && ((oflag & O_RDWR ) || (oflag & O_WRONLY))) {
+        SPDK_ERRLOG("attempt to truncate on unreadable flag\n");
+        errno = EINVAL;
+        return -1;
+    }
 
     fd = realfs.open("/dev/null", oflag, mflag);
     if (fd < 0) {
@@ -360,16 +409,57 @@ static int __hookfs_open(const char * blobfspath, int oflag, int mflag)
         return fd;
     }
 
+    if ((oflag & O_CREAT) != 0) {
+        rc = spdk_fs_create_file(g_fs, g_channel, blobfspath);
+        if (rc != 0 && ((oflag & O_EXCL) == 0 && rc != -EEXIST)) {
+            SPDK_ERRLOG("failed to create file: %s, %d\n", blobfspath, rc);
+            goto realfs_close;
+        }
+        creating = 1;
+        if (rc != -EEXIST) {
+            char * duppath = strdup(blobfspath);
+            char * parent = dirname(duppath);
+            char * duppath2 = strdup(blobfspath);
+            char * base = basename(duppath2);
+            rc = __hookfs_addfile(parent, base, DT_REG);
+            free(duppath);
+            free(duppath2);
+            if (rc != 0) {
+                SPDK_ERRLOG("failed to add '%s' in %s\n", base, parent);
+                goto realfs_close;
+            }
+        }
+    }
+
     rc = spdk_fs_open_file(g_fs, g_channel, blobfspath, oflag, &file);
     SPDK_ERRLOG("open: %s, %d, fd = %d, file = %p\n", blobfspath, rc, fd, file);
     if (rc != 0) {
-        errno = ENOENT;
-        return -rc;
+        goto realfs_close;
     }
+    if (oflag & O_TRUNC) {
+        rc = spdk_file_truncate(file, g_channel, 0);
+        if (rc != 0) {
+            SPDK_ERRLOG("failed to truncate: %s, %d\n", blobfspath, rc);
+            goto spdk_close;
+        }
+    }
+
     files[fd] = file;
     offsets[fd] = 0;
 
     return fd;
+
+spdk_close:
+    spdk_file_close(file, g_channel);
+realfs_close:
+    realfs.close(fd);
+
+    if (creating) {
+        spdk_fs_delete_file(g_fs, g_channel, blobfspath);
+    }
+
+    errno = -rc;
+    return -1;
 }
 
 static int hookfs_open(const char * abspath, int oflag, int mflag) {
@@ -488,7 +578,7 @@ ssize_t pwrite(int fd, const void * buf, size_t count, off_t offset) {
     return realfs.pwrite(fd, buf, count, offset);
 }
 
-static DIR * hookfs_opendir(const char * name);
+static DIR * __hookfs_opendir(const char * blobfspath);
 static struct dirent * hookfs_readdir(DIR * _dirp);
 static int hookfs_closedir(DIR * _dirp);
 
@@ -508,9 +598,9 @@ static int hookfs_is_dir(const char * blobfspath)
         return 1;
     }
 
-    dir = hookfs_opendir(parent);
+    dir = __hookfs_opendir(parent);
     if (!dir) {
-        SPDK_ERRLOG("not found in %s: %s, %s, %s, %s\n", parent, blobfspath, duppath, duppath2, base);
+        SPDK_ERRLOG("not found %s in %s, %s, %s, %s\n", blobfspath, parent, duppath, duppath2, base);
         free(duppath);
         free(duppath2);
         return 0;
@@ -558,13 +648,12 @@ int __xstat(int ver, const char * path, struct stat * stbuf) {
     }
 
 //  SPDK_ERRLOG(">>>>> in __xstat:%s,%s,%d <<<<<\n", path, abspath, hookfs_is_under_mountpoint(abspath));
-    normalizepath(path, abspath);
     if (realfs.initialized && !normalizepath(path, abspath) && hookfs_is_under_mountpoint(abspath)) {
         return hookfs_stat(abspath, stbuf);
     }
 
 //    SPDK_ERRLOG(">>>>> in stat <<<<<\n");
-    return realfs.__xstat(ver, path, stbuf);
+    return realfs.__xstat(ver, abspath, stbuf);
 }
 
 int __lxstat(int ver, const char * path, struct stat * stbuf) {
@@ -651,7 +740,11 @@ typedef struct hookfs_dir {
     int __dd_len;   /* size of data buffer */
     long    __dd_seek;  /* magic cookie returned */
     int __dd_flags; /* flags for readdir */
+    int __dd_count;
 } hookfs_dir_t;
+
+
+#define NR_DIRENTBUF (4096)
 
 static DIR * __hookfs_opendir(const char * blobfspath)
 {
@@ -674,7 +767,7 @@ static DIR * __hookfs_opendir(const char * blobfspath)
     ret->__dd_size = stat.size - 1;
     ret->__dd_flags = 0777;
 
-    ret->__dd_len = HOOKFS_PAGE_SIZE * 2;
+    ret->__dd_len = HOOKFS_PAGE_SIZE + NR_DIRENTBUF * sizeof(struct dirent);
     ret->__dd_buf = malloc(ret->__dd_len);
     if (!ret->__dd_buf) {
         errno = ENOMEM;
@@ -686,7 +779,8 @@ static DIR * __hookfs_opendir(const char * blobfspath)
         goto freebuf;
     }
 
-    ret->__dd_seek = 0;
+    ret->__dd_loc = 0;
+    ret->__dd_count = -1;
 
     return (DIR *)ret;
 
@@ -720,29 +814,33 @@ DIR * opendir(const char * name) {
 
 static struct dirent * hookfs_readdir(DIR * _dirp) {
     hookfs_dir_t * dirp = (hookfs_dir_t *)_dirp;
-    struct dirent * ret = (struct dirent *)(dirp->__dd_buf + HOOKFS_PAGE_SIZE);
 
-    if (dirp->__dd_seek >= dirp->__dd_size) {
-        return NULL;
-    }
-    if (dirp->__dd_seek >= dirp->__dd_loc) {
-        long rc = spdk_file_read(files[dirp->__dd_fd], g_channel, dirp->__dd_buf, dirp->__dd_loc, HOOKFS_PAGE_SIZE);
-        if (rc < 0) {
-            goto freedir;
+    if (dirp->__dd_count <= 0) {
+        if (dirp->__dd_loc < dirp->__dd_size) {
+            char * src = dirp->__dd_buf;
+            struct dirent * d = (struct dirent *)(src + HOOKFS_PAGE_SIZE);
+            long rc = spdk_file_read(files[dirp->__dd_fd], g_channel, src, dirp->__dd_loc, HOOKFS_PAGE_SIZE);
+            if (rc < 0) {
+                return NULL;
+            }
+            memset(d, 0, HOOKFS_PAGE_SIZE);
+            dirp->__dd_count = 0;
+            while (src < dirp->__dd_buf + rc - 1) {
+                d->d_type = *(unsigned char *)src;
+                src += 1;
+                strcpy(d->d_name, src);
+                src += strlen(d->d_name) + 1;
+                SPDK_ERRLOG("readdir: %s, %u\n", d->d_name, d->d_type);
+                d++;
+                dirp->__dd_count++;
+            }
+            dirp->__dd_loc += rc;
+        } else {
+            return NULL;
         }
-        dirp->__dd_loc += rc;
     }
-    memset(ret, 0, sizeof(struct dirent));
-    ret->d_type = *(unsigned char *)(dirp->__dd_buf + dirp->__dd_seek);
-    strcpy(ret->d_name, dirp->__dd_buf + dirp->__dd_seek + sizeof(unsigned char));
-    SPDK_ERRLOG("readdir: %s, %u, %ld\n", ret->d_name, ret->d_type, dirp->__dd_seek);
-    dirp->__dd_seek += strlen(ret->d_name) + sizeof(unsigned char) + 1;
 
-    return ret;
-
-freedir:
-    free(ret);
-    return NULL;
+    return (struct dirent *)(dirp->__dd_buf + HOOKFS_PAGE_SIZE + sizeof(struct dirent) * --dirp->__dd_count);
 }
 
 struct dirent * readdir(DIR * _dirp) {
@@ -756,47 +854,6 @@ struct dirent * readdir(DIR * _dirp) {
     }
 //    SPDK_ERRLOG(">>>>> in readdir <<<<<\n");
     return realfs.readdir(_dirp);
-}
-
-static int __hookfs_addfile(const char * path, const char *filename, unsigned char d_type) {
-    struct spdk_file *file;
-    int rc;
-    char buf[PATH_MAX + 2];
-    struct spdk_file_stat stat;
-
-    if (strlen(filename) == 0 || strlen(path) == 0 || !(d_type == DT_DIR || d_type == DT_REG)) {
-        SPDK_ERRLOG("cannot add file %s, d_type=%u in %s\n", filename, d_type, path);
-        return -1;
-    }
-
-    rc = spdk_fs_file_stat(g_fs, g_channel, path, &stat);
-    if (rc == -ENOENT) {
-        rc = spdk_fs_create_file(g_fs, g_channel, path);
-        if (rc != 0) {
-            SPDK_ERRLOG("failed to create file: %s, %d\n", path, rc);
-            return -1;
-        }
-        stat.size = 0;
-    }
-
-    rc = spdk_fs_open_file(g_fs, g_channel, path, 0, &file);
-    if (rc != 0) {
-        return -rc;
-    }
-
-    snprintf(buf, PATH_MAX - 1, "%c%s%c", (char)d_type, filename, 0);
-    SPDK_ERRLOG("addfile: %s, %u, %lu, %lu in %s\n", filename, d_type, stat.size, strlen(buf) + 1, path);
-    rc = spdk_file_write(file, g_channel, (void *)buf, stat.size, strlen(buf) + 1);
-    if (rc != 0) {
-        spdk_file_close(file, g_channel);
-        return -rc;
-    }
-
-    rc = spdk_file_close(file, g_channel);
-    if (rc != 0) {
-        return -rc;
-    }
-    return 0;
 }
 
 static int hookfs_mkdir(const char * abspath, mode_t m) {
@@ -892,96 +949,4 @@ int closedir(DIR * _dirp) {
 //    SPDK_ERRLOG(">>>>> in closedir <<<<<\n");
     return realfs.closedir(_dirp);
 }
-
-#if 0
-struct fuse *g_fuse;
-
-int g_fserrno;
-int g_fuse_argc = 0;
-char **g_fuse_argv = NULL;
-
-
-
-static int
-spdk_fuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
-		  off_t offset, struct fuse_file_info *fi,
-		  enum fuse_readdir_flags flags)
-{
-	struct spdk_file *file;
-	const char *filename;
-	spdk_fs_iter iter;
-
-	filler(buf, ".", NULL, 0, 0);
-	filler(buf, "..", NULL, 0, 0);
-
-	iter = spdk_fs_iter_first(g_fs);
-	while (iter != NULL) {
-		file = spdk_fs_iter_get_file(iter);
-		iter = spdk_fs_iter_next(iter);
-		filename = spdk_file_get_name(file);
-		filler(buf, &filename[1], NULL, 0, 0);
-	}
-
-	return 0;
-}
-
-static int
-spdk_fuse_mknod(const char *path, mode_t mode, dev_t rdev)
-{
-	return spdk_fs_create_file(g_fs, g_channel, path);
-}
-
-static int
-spdk_fuse_unlink(const char *path)
-{
-	return spdk_fs_delete_file(g_fs, g_channel, path);
-}
-
-static int
-spdk_fuse_truncate(const char *path, off_t size, struct fuse_file_info *fi)
-{
-	struct spdk_file *file;
-	int rc;
-
-	rc = spdk_fs_open_file(g_fs, g_channel, path, 0, &file);
-	if (rc != 0) {
-		return -rc;
-	}
-
-	rc = spdk_file_truncate(file, g_channel, size);
-	if (rc != 0) {
-		return -rc;
-	}
-
-	spdk_file_close(file, g_channel);
-
-	return 0;
-}
-
-static int
-spdk_fuse_utimens(const char *path, const struct timespec tv[2], struct fuse_file_info *fi)
-{
-	return 0;
-}
-
-
-static int
-spdk_fuse_flush(const char *path, struct fuse_file_info *info)
-{
-	return 0;
-}
-
-static int
-spdk_fuse_fsync(const char *path, int datasync, struct fuse_file_info *info)
-{
-	return 0;
-}
-
-static int
-spdk_fuse_rename(const char *old_path, const char *new_path, unsigned int flags)
-{
-	return spdk_fs_rename_file(g_fs, g_channel, old_path, new_path);
-}
-
-#endif
 
