@@ -312,14 +312,14 @@ static void init_fsiface(void) {
         SPDK_ERRLOG("malloc(%ld) failed\n", sizeof(struct spdk_file *) * max_open);
         exit(1);
     }
-    spdk_mem_all_zero(files, sizeof(struct spdk_file *) * max_open);
+    memset(files, 0, sizeof(struct spdk_file *) * max_open);
 
     offsets = malloc(sizeof(uint64_t) * max_open);
     if (!offsets) {
         SPDK_ERRLOG("malloc(%ld) failed\n", sizeof(uint64_t) * max_open);
         exit(1);
     }
-    spdk_mem_all_zero(offsets, sizeof(uint64_t) * max_open);
+    memset(offsets, 0, sizeof(uint64_t) * max_open);
 
     spdk_smp_rmb();
 
@@ -349,11 +349,10 @@ static bool hookfs_is_under_mountpoint(const char * abspath) {
     return strncmp(abspath, g_mountpoint, g_mountpoint_strlen) == 0;
 }
 
-static int hookfs_open(const char * abspath, int oflag, int mflag) {
+static int __hookfs_open(const char * blobfspath, int oflag, int mflag)
+{
     struct spdk_file * file;
     int rc, fd;
-    const char * path = (*(abspath + g_mountpoint_strlen) == 0) ? "/": abspath + g_mountpoint_strlen;
-
 
     fd = realfs.open("/dev/null", oflag, mflag);
     if (fd < 0) {
@@ -361,8 +360,8 @@ static int hookfs_open(const char * abspath, int oflag, int mflag) {
         return fd;
     }
 
-    rc = spdk_fs_open_file(g_fs, g_channel, path, oflag, &file);
-    SPDK_ERRLOG("open: %s (%s), %d\n", abspath, path, rc);
+    rc = spdk_fs_open_file(g_fs, g_channel, blobfspath, oflag, &file);
+    SPDK_ERRLOG("open: %s, %d, fd = %d, file = %p\n", blobfspath, rc, fd, file);
     if (rc != 0) {
         errno = ENOENT;
         return -rc;
@@ -371,6 +370,11 @@ static int hookfs_open(const char * abspath, int oflag, int mflag) {
     offsets[fd] = 0;
 
     return fd;
+}
+
+static int hookfs_open(const char * abspath, int oflag, int mflag) {
+    const char * path = (*(abspath + g_mountpoint_strlen) == 0) ? "/": abspath + g_mountpoint_strlen;
+    return __hookfs_open(path, oflag, mflag);
 }
 
 int open(char const * path, int oflag, ...) {
@@ -390,10 +394,12 @@ int open(char const * path, int oflag, ...) {
 
 //    SPDK_ERRLOG(">>>>> in open: %s <<<<<<\n", path);
     return realfs.open(path, oflag, mflag);
+
 }
 
 static int hookfs_release(int fd) {
     int rc = spdk_file_close(files[fd], g_channel);
+    SPDK_ERRLOG("close: %p, fd = %d, %d\n", files[fd], fd, rc);
     if (rc == 0) {
         files[fd] = NULL;
     }
@@ -486,17 +492,17 @@ static DIR * hookfs_opendir(const char * name);
 static struct dirent * hookfs_readdir(DIR * _dirp);
 static int hookfs_closedir(DIR * _dirp);
 
-static int hookfs_is_dir(const char * abspath)
+static int hookfs_is_dir(const char * blobfspath)
 {
-    char * duppath = strdup(abspath);
+    char * duppath = strdup(blobfspath);
     char * parent = dirname(duppath);
-    char * duppath2 = strdup(abspath);
+    char * duppath2 = strdup(blobfspath);
     char * base = basename(duppath2);
     int rc;
     DIR * dir;
     struct dirent * d;
 
-    if (strlen(abspath) == 1 && *abspath == '/') {
+    if (strlen(blobfspath) == 1 && *blobfspath == '/') {
         free(duppath);
         free(duppath2);
         return 1;
@@ -504,9 +510,9 @@ static int hookfs_is_dir(const char * abspath)
 
     dir = hookfs_opendir(parent);
     if (!dir) {
+        SPDK_ERRLOG("not found in %s: %s, %s, %s, %s\n", parent, blobfspath, duppath, duppath2, base);
         free(duppath);
         free(duppath2);
-        SPDK_ERRLOG("orphan file?: %s\n", abspath);
         return 0;
     }
 
@@ -523,21 +529,26 @@ static int hookfs_is_dir(const char * abspath)
     return rc;
 }
 
-static int hookfs_stat(const char * abspath, struct stat * stbuf)
+static int __hookfs_stat(const char * blobfspath, struct stat * stbuf)
 {
     struct spdk_file_stat stat;
     int rc;
-    const char * path = (*(abspath + g_mountpoint_strlen) == 0) ? "/": abspath + g_mountpoint_strlen;
 
-    rc = spdk_fs_file_stat(g_fs, g_channel, path, &stat);
-    SPDK_ERRLOG(">>>>> in stat:%s (%s), %d <<<<<\n", abspath, path, rc);
+    rc = spdk_fs_file_stat(g_fs, g_channel, blobfspath, &stat);
+    SPDK_ERRLOG(">>>>> in stat:%s, %d <<<<<\n", blobfspath, rc);
     if (rc == 0) {
-        stbuf->st_mode = (!hookfs_is_dir(abspath) ? S_IFREG : S_IFDIR) | 0644;
+        stbuf->st_mode = (!hookfs_is_dir(blobfspath) ? S_IFREG : S_IFDIR) | 0644;
         stbuf->st_nlink = 1;
         stbuf->st_size = stat.size;
     }
 
     return rc;
+}
+
+static int hookfs_stat(const char * abspath, struct stat * stbuf)
+{
+    const char * path = (*(abspath + g_mountpoint_strlen) == 0) ? "/": abspath + g_mountpoint_strlen;
+    return __hookfs_stat(path, stbuf);
 }
 
 int __xstat(int ver, const char * path, struct stat * stbuf) {
@@ -577,10 +588,10 @@ int __fxstat(int ver, int fd, struct stat * stbuf) {
     if (!realfs.__fxstat) {
         realfs.__fxstat = load_symbol("__fxstat");
     }
-/*    if (realfs.initialized && files[fd]) {
-        return stat(spdk_file_get_name(files[fd]), stbuf);
-    }*/
-//    SPDK_ERRLOG(">>>>> in __fxstat <<<<<\n");
+    SPDK_ERRLOG(">>>>> in __fxstat:%p, fd = %d <<<<<\n", files[fd], fd);
+    if (realfs.initialized && files[fd]) {
+        return __hookfs_stat(spdk_file_get_name(files[fd]), stbuf);
+    }
     return realfs.__fxstat(ver, fd, stbuf);
 }
 
@@ -642,11 +653,10 @@ typedef struct hookfs_dir {
     int __dd_flags; /* flags for readdir */
 } hookfs_dir_t;
 
-
-static DIR * hookfs_opendir(const char * name) {
+static DIR * __hookfs_opendir(const char * blobfspath)
+{
     struct spdk_file_stat stat;
     hookfs_dir_t * ret;
-    const char * path = (*(name + g_mountpoint_strlen) == 0) ? "/": name + g_mountpoint_strlen;
     int rc;
 
     ret = malloc(sizeof(hookfs_dir_t));
@@ -655,8 +665,8 @@ static DIR * hookfs_opendir(const char * name) {
         return NULL;
     }
 
-    rc = spdk_fs_file_stat(g_fs, g_channel, path, &stat);
-    SPDK_ERRLOG("opendir: %s (%s), %d\n", name, path, rc);
+    rc = spdk_fs_file_stat(g_fs, g_channel, blobfspath, &stat);
+    SPDK_ERRLOG("opendir: %s, %d\n", blobfspath, rc);
     if (rc != 0) {
         errno = ENOENT;
         goto freedir;
@@ -671,7 +681,7 @@ static DIR * hookfs_opendir(const char * name) {
         goto freedir;
     }
 
-    ret->__dd_fd = open(name, O_RDWR);
+    ret->__dd_fd = __hookfs_open(blobfspath, O_RDWR, 0);
     if (ret->__dd_fd < 0) {
         goto freebuf;
     }
@@ -685,6 +695,11 @@ freebuf:
 freedir:
     free(ret);
     return NULL;
+}
+
+static DIR * hookfs_opendir(const char * name) {
+    const char * path = (*(name + g_mountpoint_strlen) == 0) ? "/": name + g_mountpoint_strlen;
+    return __hookfs_opendir(path);
 }
 
 DIR * opendir(const char * name) {
@@ -720,7 +735,7 @@ static struct dirent * hookfs_readdir(DIR * _dirp) {
     memset(ret, 0, sizeof(struct dirent));
     ret->d_type = *(unsigned char *)(dirp->__dd_buf + dirp->__dd_seek);
     strcpy(ret->d_name, dirp->__dd_buf + dirp->__dd_seek + sizeof(unsigned char));
-    SPDK_ERRLOG("readdir: %s, %d, %d\n", ret->d_name, ret->d_type, dirp->__dd_seek);
+    SPDK_ERRLOG("readdir: %s, %u, %ld\n", ret->d_name, ret->d_type, dirp->__dd_seek);
     dirp->__dd_seek += strlen(ret->d_name) + sizeof(unsigned char) + 1;
 
     return ret;
@@ -770,7 +785,7 @@ static int __hookfs_addfile(const char * path, const char *filename, unsigned ch
     }
 
     snprintf(buf, PATH_MAX - 1, "%c%s%c", (char)d_type, filename, 0);
-    SPDK_ERRLOG("addfile: %s, %d, %d, %d\n", filename, d_type, stat.size, strlen(buf) + 1);
+    SPDK_ERRLOG("addfile: %s, %u, %lu, %lu in %s\n", filename, d_type, stat.size, strlen(buf) + 1, path);
     rc = spdk_file_write(file, g_channel, (void *)buf, stat.size, strlen(buf) + 1);
     if (rc != 0) {
         spdk_file_close(file, g_channel);
@@ -786,7 +801,7 @@ static int __hookfs_addfile(const char * path, const char *filename, unsigned ch
 
 static int hookfs_mkdir(const char * abspath, mode_t m) {
     struct spdk_file_stat stat, pstat;
-    char * path = (*(abspath + g_mountpoint_strlen) == 0) ? "/": abspath + g_mountpoint_strlen;
+    const char * path = (*(abspath + g_mountpoint_strlen) == 0) ? "/": abspath + g_mountpoint_strlen;
     char * duppath = strdup(path);
     char * parent = dirname(duppath);
     int rc;
