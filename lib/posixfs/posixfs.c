@@ -522,8 +522,10 @@ ssize_t read(int fd, void * buf, size_t count) {
         int len = hookfs_read(fd, buf, count, offsets[fd]);
         if (len > 0) {
             offsets[fd] += len;
+            return len;
         }
-        return len;
+        errno = -len;
+        return -1;
     }
 //    SPDK_ERRLOG(">>>>> in read <<<<<\n");
     return realfs.read(fd, buf, count);
@@ -534,7 +536,12 @@ ssize_t pread(int fd, void * buf, size_t count, off_t offset) {
         realfs.pread = load_symbol("pread");
     }
     if (realfs.initialized && files[fd]) {
-        return hookfs_read(fd, buf, count, offset);
+        int len = hookfs_read(fd, buf, count, offset);
+        if (len >= 0) {
+            return len;
+        }
+        errno = -len;
+        return -1;
     }
 //    SPDK_ERRLOG(">>>>> in pread <<<<<\n");
     return realfs.pread(fd, buf, count, offset);
@@ -557,10 +564,12 @@ ssize_t write(int fd, const void * buf, size_t count) {
     }
     if (realfs.initialized && files[fd]) {
         int len = hookfs_write(fd, buf, count, offsets[fd]);
-        if (len > 0) {
+        if (len >= 0) {
             offsets[fd] += len;
+            return len;
         }
-        return len;
+        errno = -len;
+        return -1;
     }
 //    SPDK_ERRLOG(">>>>> in write <<<<<\n");
     return realfs.write(fd, buf, count);
@@ -571,9 +580,14 @@ ssize_t pwrite(int fd, const void * buf, size_t count, off_t offset) {
         realfs.pwrite = load_symbol("pwrite");
     }
 
-//    SPDK_ERRLOG(">>>>> in pwrite <<<<<\n");
     if (realfs.initialized && files[fd]) {
-        return hookfs_write(fd, buf, count, offset);
+        int len = hookfs_write(fd, buf, count, offset);
+//        SPDK_ERRLOG("pwrite(%d, %p, %ld, %ld) = %d\n", fd, buf, count, offset, len);
+        if (len >= 0) {
+            return len;
+        }
+        errno = -len;
+        return -1;
     }
     return realfs.pwrite(fd, buf, count, offset);
 }
