@@ -24,6 +24,8 @@ GLIBC_2.17 {
         __lxstat;
         __fxstat;
         posix_fadvise;
+        fsync;
+        unlink;
         opendir;
         closedir;
         readdir;

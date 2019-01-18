@@ -75,6 +75,7 @@ static int g_mountpoint_strlen;
 static char * g_logstr;
 static struct spdk_bs_dev * g_bs_dev;
 static struct spdk_file ** files;
+static int *syncing;
 static uint64_t * offsets;
 static long max_open;
 
@@ -145,6 +146,8 @@ static struct real_fsiface {
     int (*__fxstat)(int ver, int fd, struct stat *);
 //    int (*fstat)(int, struct stat *);
     int (*posix_fadvise)(int, off_t, off_t, int);
+    int (*fsync)(int);
+    int (*unlink)(const char *);
     DIR * (*opendir)(const char *);
     int (*closedir)(DIR *);
     struct dirent * (*readdir)(DIR *);
@@ -213,7 +216,7 @@ hookfs_run(void *arg1, void *arg2)
 
     g_bs_dev = spdk_bdev_create_bs_dev(bdev, NULL, NULL);
 
-    printf("Mounting BlobFS on bdev %s\n", spdk_bdev_get_name(bdev));
+//  printf("Mounting BlobFS on bdev %s\n", spdk_bdev_get_name(bdev));
     spdk_fs_load(g_bs_dev, __send_request, init_cb, NULL);
 }
 
@@ -322,6 +325,13 @@ static void init_fsiface(void) {
     }
     memset(offsets, 0, sizeof(uint64_t) * max_open);
 
+    syncing = malloc(sizeof(int) * max_open);
+    if (!syncing) {
+        SPDK_ERRLOG("malloc(%ld) failed\n", sizeof(int) * max_open);
+        exit(1);
+    }
+    memset(syncing, 0, sizeof(int) * max_open);
+
     spdk_smp_rmb();
 
     pthread_create(&hookfs_thread, NULL, start_app, NULL);
@@ -338,7 +348,7 @@ void hookfs_init(void) {
         if (realfs.initialized < 0) {
             SPDK_ERRLOG("error!!!\n");
         }
-        SPDK_ERRLOG("init!!!!!\n");
+//        SPDK_ERRLOG("init!!!!!\n");
     }
 }
 
@@ -377,7 +387,7 @@ static int __hookfs_addfile(const char * blobfspath, const char *filename, unsig
     }
 
     snprintf(buf, PATH_MAX - 1, "%c%s%c", (char)d_type, filename, 0);
-    SPDK_ERRLOG("addfile: %s, %u, %lu, %lu in %s\n", filename, d_type, stat.size, strlen(buf) + 1, blobfspath);
+//    SPDK_ERRLOG("addfile: %s, %u, %lu, %lu in %s\n", filename, d_type, stat.size, strlen(buf) + 1, blobfspath);
     rc = spdk_file_write(file, g_channel, (void *)buf, stat.size, strlen(buf) + 1);
     if (rc != 0) {
         spdk_file_close(file, g_channel);
@@ -432,7 +442,7 @@ static int __hookfs_open(const char * blobfspath, int oflag, int mflag)
     }
 
     rc = spdk_fs_open_file(g_fs, g_channel, blobfspath, oflag, &file);
-    SPDK_ERRLOG("open: %s, %d, fd = %d, file = %p\n", blobfspath, rc, fd, file);
+//    SPDK_ERRLOG("open: %s, %d, fd = %d, file = %p\n", blobfspath, rc, fd, file);
     if (rc != 0) {
         goto realfs_close;
     }
@@ -446,6 +456,7 @@ static int __hookfs_open(const char * blobfspath, int oflag, int mflag)
 
     files[fd] = file;
     offsets[fd] = 0;
+    syncing[fd] = 0;
 
     return fd;
 
@@ -488,8 +499,10 @@ int open(char const * path, int oflag, ...) {
 }
 
 static int hookfs_release(int fd) {
-    int rc = spdk_file_close(files[fd], g_channel);
-    SPDK_ERRLOG("close: %p, fd = %d, %d\n", files[fd], fd, rc);
+    int rc;
+//while (syncing[fd] > 0) {}
+    rc = spdk_file_close(files[fd], g_channel);
+//    SPDK_ERRLOG("close: %p, fd = %d, %d\n", files[fd], fd, rc);
     if (rc == 0) {
         files[fd] = NULL;
     }
@@ -547,11 +560,19 @@ ssize_t pread(int fd, void * buf, size_t count, off_t offset) {
     return realfs.pread(fd, buf, count, offset);
 }
 
+//static void sync_completion(void * ctx, int fserrno) {
+//    int fd = (int)ctx;
+//    SPDK_ERRLOG("completed: %p\n", fd);
+//    syncing[fd] -= 1;
+//}
+
 static int hookfs_write(int fd, const char * buf, size_t len, uint64_t offset) {
     int rc;
 
     rc = spdk_file_write(files[fd], g_channel, (void *)buf, offset, len);
     if (rc == 0) {
+//        syncing[fd] += 1;
+//        spdk_file_sync_async(files[fd], g_channel, sync_completion, (void *)fd);
         return (int)len;
     } else {
         return rc;
@@ -753,6 +774,34 @@ int posix_fadvise(int fd, off_t offset, off_t len, int advice) {
     return realfs.posix_fadvise(fd, offset, len, advice);
 }
 
+int fsync(int fd) {
+    if (!realfs.fsync) {
+        realfs.fsync = load_symbol("fsync");
+    }
+ 
+    if (realfs.initialized && files[fd]) {
+        return spdk_file_sync(files[fd], g_channel);
+    }
+//    SPDK_ERRLOG(">>>>> in posix_fadvise <<<<<\n");
+    return realfs.fsync(fd);
+}
+
+int unlink(const char * path) {
+    char abspath[PATH_MAX];
+    if (!realfs.unlink) {
+        realfs.unlink = load_symbol("unlink");
+    }
+    if (realfs.initialized && !normalizepath(path, abspath)) {
+        if (hookfs_is_under_mountpoint(abspath)) {
+            const char * path = (*(abspath + g_mountpoint_strlen) == 0) ? "/": abspath + g_mountpoint_strlen;
+            return spdk_fs_delete_file(g_fs, g_channel, path);
+        }
+    }
+//    SPDK_ERRLOG(">>>>> in posix_fadvise <<<<<\n");
+    return realfs.unlink(path);
+
+}
+
 typedef struct hookfs_dir {
     int __dd_fd;    /* file descriptor associated with directory */
     long    __dd_loc;   /* offset in current buffer */
@@ -886,7 +935,7 @@ static int hookfs_mkdir(const char * abspath, mode_t m) {
     char * base = basename(duppath2);
     int rc;
 
-    SPDK_ERRLOG("mkdir: %s (%s) under %s\n", blobfspath, abspath, parent);
+//    SPDK_ERRLOG("mkdir: %s (%s) under %s\n", blobfspath, abspath, parent);
     if (strcmp(blobfspath, parent) != 0) {
         rc = hookfs_is_dir(parent);
         SPDK_ERRLOG("hookfs_is_dir: %s, %d\n", parent, rc);
@@ -903,7 +952,7 @@ static int hookfs_mkdir(const char * abspath, mode_t m) {
 
     rc = spdk_fs_file_stat(g_fs, g_channel, blobfspath, &stat);
     if (rc == -ENOENT) {
-        SPDK_ERRLOG("mkdir: %s\n", blobfspath);
+//        SPDK_ERRLOG("mkdir: %s\n", blobfspath);
 
         if (__hookfs_addfile(blobfspath, ".", DT_DIR)) {
             SPDK_ERRLOG("failed to create '.' in %s\n", blobfspath);
@@ -972,4 +1021,5 @@ int closedir(DIR * _dirp) {
 //    SPDK_ERRLOG(">>>>> in closedir <<<<<\n");
     return realfs.closedir(_dirp);
 }
+
 

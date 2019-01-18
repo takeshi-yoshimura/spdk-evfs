@@ -214,7 +214,8 @@ spdk_fuse_flush(const char *path, struct fuse_file_info *info)
 static int
 spdk_fuse_fsync(const char *path, int datasync, struct fuse_file_info *info)
 {
-	return 0;
+	struct spdk_file *file = (struct spdk_file *)info->fh;
+	return spdk_file_sync(file, g_channel);
 }
 
 static int
@@ -335,6 +336,7 @@ int main(int argc, char **argv)
 	opts.reactor_mask = "0x3";
 	opts.mem_size = 6144;
 	opts.shutdown_cb = spdk_fuse_shutdown;
+    opts.hugepage_single_segments = 1;
 
 	g_bdev_name = argv[2];
 	g_mountpoint = argv[3];
