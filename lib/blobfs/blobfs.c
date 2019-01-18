@@ -1811,6 +1811,26 @@ alloc_cache_memory_buffer(struct spdk_file *context)
 		}
 	}
 
+    int released = 0;
+	for (uint64_t off = 0; off < context->length_flushed; off += CACHE_BUFFER_SIZE) {
+		struct cache_buffer * c = spdk_tree_find_buffer(context->tree, off);
+		if (c != NULL) {
+            pthread_spin_lock(&g_caches_lock);
+            spdk_tree_remove_buffer(context->tree, c);
+            if (context->tree->present_mask == 0) {
+                TAILQ_REMOVE(&g_caches, context, cache_tailq);
+            }
+            pthread_spin_unlock(&g_caches_lock);
+            released += 1;
+			break;
+		}
+	}
+	if (released > 0) {
+		buf = spdk_mempool_get(g_cache_pool);
+		if (buf != NULL) {
+			return buf;
+		}
+	}
 	return NULL;
 }
 
