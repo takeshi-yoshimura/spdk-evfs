@@ -660,7 +660,7 @@ static int __hookfs_stat(const char * blobfspath, struct stat * stbuf)
     int rc;
 
     rc = spdk_fs_file_stat(g_fs, g_channel, blobfspath, &stat);
-    SPDK_ERRLOG(">>>>> in stat:%s, %d <<<<<\n", blobfspath, rc);
+//    SPDK_ERRLOG(">>>>> in stat:%s, %d <<<<<\n", blobfspath, rc);
     if (rc == 0) {
         stbuf->st_mode = (!hookfs_is_dir(blobfspath) ? S_IFREG : S_IFDIR) | 0644;
         stbuf->st_nlink = 1;
@@ -719,7 +719,7 @@ int __fxstat(int ver, int fd, struct stat * stbuf) {
     if (!realfs.__fxstat) {
         realfs.__fxstat = load_symbol("__fxstat");
     }
-    SPDK_ERRLOG(">>>>> in __fxstat:%p, fd = %d <<<<<\n", files[fd], fd);
+//    SPDK_ERRLOG(">>>>> in __fxstat:%p, fd = %d <<<<<\n", files[fd], fd);
     if (realfs.initialized && files[fd]) {
         return __hookfs_stat(spdk_file_get_name(files[fd]), stbuf);
     }
@@ -829,7 +829,7 @@ static DIR * __hookfs_opendir(const char * blobfspath)
     }
 
     rc = spdk_fs_file_stat(g_fs, g_channel, blobfspath, &stat);
-    SPDK_ERRLOG("opendir: %s, %d\n", blobfspath, rc);
+//    SPDK_ERRLOG("opendir: %s, %d\n", blobfspath, rc);
     if (rc != 0) {
         errno = ENOENT;
         goto freedir;
@@ -900,7 +900,7 @@ static struct dirent * hookfs_readdir(DIR * _dirp) {
                 src += 1;
                 strcpy(d->d_name, src);
                 src += strlen(d->d_name) + 1;
-                SPDK_ERRLOG("readdir: %s, %u\n", d->d_name, d->d_type);
+//                SPDK_ERRLOG("readdir: %s, %u\n", d->d_name, d->d_type);
                 d++;
                 dirp->__dd_count++;
             }
