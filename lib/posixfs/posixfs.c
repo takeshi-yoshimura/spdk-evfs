@@ -407,7 +407,7 @@ static int __hookfs_open(const char * blobfspath, int oflag, int mflag)
     int rc, fd;
     int creating = 0;
 
-    if ((oflag & O_TRUNC) && ((oflag & O_RDWR ) || (oflag & O_WRONLY))) {
+    if ((oflag & O_TRUNC) && !((oflag & O_RDWR ) || (oflag & O_WRONLY))) {
         SPDK_ERRLOG("attempt to truncate on unreadable flag\n");
         errno = EINVAL;
         return -1;
@@ -495,7 +495,19 @@ int open(char const * path, int oflag, ...) {
 
 //    SPDK_ERRLOG(">>>>> in open: %s <<<<<<\n", path);
     return realfs.open(path, oflag, mflag);
+}
 
+int creat(const char * path, mode_t mode) {
+    char abspath[PATH_MAX];
+    if (!realfs.creat) {
+        realfs.creat = load_symbol("creat");
+    }
+    if (realfs.initialized && !normalizepath(path, abspath) && hookfs_is_under_mountpoint(abspath)) {
+        return hookfs_open(abspath, O_CREAT|O_WRONLY|O_TRUNC, mode);
+    }
+
+//    SPDK_ERRLOG(">>>>> in creat: %s <<<<<<\n", path);
+    return realfs.creat(path, mode);
 }
 
 static int hookfs_release(int fd) {
@@ -794,7 +806,11 @@ int unlink(const char * path) {
     if (realfs.initialized && !normalizepath(path, abspath)) {
         if (hookfs_is_under_mountpoint(abspath)) {
             const char * path = (*(abspath + g_mountpoint_strlen) == 0) ? "/": abspath + g_mountpoint_strlen;
-            return spdk_fs_delete_file(g_fs, g_channel, path);
+            int rc = spdk_fs_delete_file(g_fs, g_channel, path);
+/*            if (rc == 0) {
+// TODO: delete a directory entry from storage
+            }*/
+            return rc;
         }
     }
 //    SPDK_ERRLOG(">>>>> in posix_fadvise <<<<<\n");
