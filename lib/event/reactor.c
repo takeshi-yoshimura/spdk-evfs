@@ -312,8 +312,8 @@ _spdk_reactor_run(void *arg)
 	if (!thread) {
 		return -1;
 	}
-	SPDK_NOTICELOG("Reactor started on core %u on socket %u\n", reactor->lcore,
-		       reactor->socket_id);
+//	SPDK_NOTICELOG("Reactor started on core %u on socket %u\n", reactor->lcore,
+//		       reactor->socket_id);
 
 	sleep_cycles = reactor->max_delay_us * spdk_get_ticks_hz() / SPDK_SEC_TO_USEC;
 	if (g_context_switch_monitor_enabled) {
@@ -486,7 +486,7 @@ spdk_reactors_init(unsigned int max_delay_us)
 	char mempool_name[32];
 
 	socket_mask = spdk_reactor_get_socket_mask();
-	SPDK_NOTICELOG("Occupied cpu socket mask is 0x%lx\n", socket_mask);
+//	SPDK_NOTICELOG("Occupied cpu socket mask is 0x%lx\n", socket_mask);
 
 	for (i = 0; i < SPDK_MAX_SOCKET; i++) {
 		if ((1ULL << i) & socket_mask) {
