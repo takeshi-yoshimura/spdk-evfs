@@ -14,6 +14,7 @@
 GLIBC_2.17 {
     global:
         open;
+        open64;
         creat;
         read;
         write;
@@ -22,15 +23,24 @@ GLIBC_2.17 {
         lseek;
         close;
         __xstat;
+        __xstat64;
         __lxstat;
+        __lxstat64;
         __fxstat;
+        __fxstat64;
         posix_fadvise;
         fsync;
         unlink;
+        unlinkat;
         opendir;
         closedir;
         readdir;
         mkdir;
+        rmdir;
+        truncate;
+        ftruncate;
+        truncate64;
+        ftruncate64;
 };
 # the first 16 have v1 aliases
 # 3 of the 5 system calls that libnuma provides are common to all versions:
