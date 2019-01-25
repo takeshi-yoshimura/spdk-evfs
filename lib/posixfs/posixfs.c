@@ -75,8 +75,21 @@ static int g_mountpoint_strlen;
 static char * g_logstr;
 static struct spdk_bs_dev * g_bs_dev;
 static struct spdk_file ** files;
+static struct spdk_file_stat ** stats;
 static uint64_t * offsets;
 static long max_open;
+
+typedef struct hookfs_fd {
+    struct spdk_file * file;
+    struct spdk_file_stat stat;
+    int dirtied;
+    int offset;
+    pthread_rwlock_t lock;
+} hookfs_fd_t;
+
+static struct spdk_file_stat * get_file_stat(const char * blobfspath) {
+    int rc = spdk_fs_file_stat(g_fs, g_channel, blobfspath, &stat);
+}
 
 static int normalizepath(const char * path, char * ret) {
     int i, j, last;
@@ -140,6 +153,7 @@ static struct real_fsiface {
     ssize_t (*pread)(int, void *, size_t, off_t);
     ssize_t (*pwrite)(int, const void *, size_t, off_t);
     off_t (*lseek)(int, off_t, int);
+    off64_t (*lseek64)(int, off64_t, int);
     int (*close)(int);
     int (*__xstat)(int ver, const char *, struct stat *);
     int (*__lxstat)(int ver, const char *, struct stat *);
@@ -1042,40 +1056,56 @@ int __fxstat64(int ver, int fd, struct stat64 * stbuf) {
     return realfs.__fxstat64(ver, fd, stbuf);
 }
 
+static uint64_t hookfs_lseek(int fd, uint64_t offset, int whence) {
+    struct spdk_file_stat stat;
+    uint64_t newoffset = offsets[fd];
+    int rc = spdk_fs_file_stat(g_fs, g_channel, spdk_file_get_name(files[fd]), &stat);
+    if (rc != 0) {
+        errno = EBADF;
+        return -1;
+    }
+    switch (whence) {
+        case SEEK_SET:
+            newoffset = offset;
+            break;
+        case SEEK_CUR:
+            newoffset += offset;
+            break;
+        case SEEK_END:
+            newoffset = stat.size + offset;
+            break;
+        default:
+            errno = EINVAL;
+            return -1;
+    }
+    if (newoffset > stat.size) {
+        errno = EINVAL;
+        return -1;
+    }
+    offsets[fd] = newoffset;
+    return newoffset;
+}
+
 off_t lseek(int fd, off_t offset, int whence) {
-    struct stat stbuf;
     if (!realfs.lseek) {
         realfs.lseek = load_symbol("lseek");
     }
     if (realfs.initialized && files[fd]) {
-        off_t newoffset = offsets[fd];
-        if (fstat(fd, &stbuf) != 0) {
-            errno = EBADF;
-            return -1;
-        }
-        switch (whence) {
-            case SEEK_SET:
-                newoffset = (uint64_t) offset;
-                break;
-            case SEEK_CUR:
-                newoffset += offset;
-                break;
-            case SEEK_END:
-                newoffset = (uint64_t)(stbuf.st_size + offset);
-                break;
-            default:
-                errno = EINVAL;
-                return -1;
-        }
-        if (newoffset < 0 || newoffset > stbuf.st_size) {
-            errno = EINVAL;
-            return -1;
-        }
-        offsets[fd] = (uint64_t) newoffset;
-        return newoffset;
+        return (off_t) hookfs_lseek(fd, offset, whence);
     }
 //    SPDK_ERRLOG(">>>>> in lseek <<<<<\n");
     return realfs.lseek(fd, offset, whence);
+}
+
+off64_t lseek64(int fd, off64_t offset, int whence) {
+    if (!realfs.lseek64) {
+        realfs.lseek64 = load_symbol("lseek64");
+    }
+    if (realfs.initialized && files[fd]) {
+        return (off64_t) hookfs_lseek(fd, offset, whence);
+    }
+//    SPDK_ERRLOG(">>>>> in lseek <<<<<\n");
+    return realfs.lseek64(fd, offset, whence);
 }
 
 int posix_fadvise(int fd, off_t offset, off_t len, int advice) {
@@ -1460,7 +1490,6 @@ int ftruncate64(int fd, off_t length) {
         realfs.ftruncate64 = load_symbol("ftruncate64");
     }
     if (realfs.initialized && files[fd]) {
-        SPDK_ERRLOG("%d, %ld\n", fd, length);
         return __hookfs_truncate(files[fd], length);
     }
 //    SPDK_ERRLOG(">>>>> in posix_fadvise <<<<<\n");

@@ -21,6 +21,7 @@ GLIBC_2.17 {
         pread;
         pwrite;
         lseek;
+        lseek64;
         close;
         __xstat;
         __xstat64;
