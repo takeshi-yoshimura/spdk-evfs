@@ -600,7 +600,7 @@ iter_cb(void *ctx, struct spdk_blob *blob, int rc)
 	rc = spdk_blob_get_xattr_value(blob, "name", (const void **)&name, &value_len);
 	if (rc < 0) {
 		args->fn.fs_op_with_handle(args->arg, fs, rc);
-		free_fs_request(req);
+//		free_fs_request(req);
 		return;
 	}
 

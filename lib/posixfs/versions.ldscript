@@ -13,6 +13,7 @@
 
 GLIBC_2.17 {
     global:
+        __libc_start_main;
         open;
         open64;
         creat;

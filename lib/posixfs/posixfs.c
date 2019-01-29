@@ -188,6 +188,7 @@ start_hookfs_fn(void *arg1, void *arg2)
     char dummy[PATH_MAX];
     snprintf(dummy, PATH_MAX - 1, "%s/", g_mountpoint);
     hookfs_thread2 = pthread_self();
+    g_channel = spdk_fs_alloc_io_channel_sync(g_fs);
 
     realfs.initialized = 1;
     spdk_smp_rmb();
@@ -204,6 +205,7 @@ init_cb(void *ctx, struct spdk_filesystem *fs, int fserrno)
     struct spdk_event *event;
 
     g_fs = fs;
+    spdk_smp_rmb();
     g_channel = spdk_fs_alloc_io_channel_sync(g_fs);
     event = spdk_event_allocate(1, start_hookfs_fn, NULL, NULL);
     spdk_event_call(event);
@@ -373,6 +375,20 @@ __attribute__((destructor, used)) void hookfs_fini(void);
 void hookfs_fini(void) {
 }
 
+int __libc_start_main(int argc, char **argv, char **env, int (*init)(int, char **, char **),
+    void (*fini)(void), void * stinfo, void * stack_end)
+{
+    struct spdk_thread * thread = spdk_allocate_thread(NULL, NULL, NULL, NULL, NULL);
+	if (!thread) {
+		SPDK_ERRLOG("failed to allocate spdk thread\n");
+		return -1;
+	}
+    g_channel = spdk_fs_alloc_io_channel_sync(g_fs);
+    int (*orig)(int, char **, char **, int (*init)(int, char **, char **), void (*fini)(void), void *, void *)
+		   = dlsym(RTLD_NEXT, "__libc_start_main");
+    return orig(argc, argv, env, init, fini, stinfo, stack_end);
+}
+
 static void * spdk_thread_runner(void * args) {
     void * (*realstart)(void *) = ((void **)args)[0];
     void * realarg = ((void **)args)[1];
@@ -382,9 +398,10 @@ static void * spdk_thread_runner(void * args) {
         SPDK_ERRLOG("failed to register thread\n");
         return NULL;
     }
-    g_channel = spdk_fs_alloc_io_channel(g_fs);
+    g_channel = spdk_fs_alloc_io_channel_sync(g_fs);
     ret = realstart(realarg);
     free(args);
+    spdk_fs_free_io_channel(g_channel);
     return ret;
 }
 
