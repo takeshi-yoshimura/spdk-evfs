@@ -20,6 +20,8 @@ GLIBC_2.17 {
         write;
         pread;
         pwrite;
+        pread64;
+        pwrite64;
         lseek;
         lseek64;
         close;
@@ -42,6 +44,7 @@ GLIBC_2.17 {
         ftruncate;
         truncate64;
         ftruncate64;
+        pthread_create;
 };
 # the first 16 have v1 aliases
 # 3 of the 5 system calls that libnuma provides are common to all versions:

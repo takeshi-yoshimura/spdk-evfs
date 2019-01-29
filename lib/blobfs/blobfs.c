@@ -2236,6 +2236,25 @@ spdk_file_write(struct spdk_file *file, struct spdk_io_channel *_channel,
 	return 0;
 }
 
+int
+spdk_file_write_direct(struct spdk_file *file, struct spdk_io_channel *_channel,
+		void *payload, uint64_t offset, uint64_t length)
+{
+	struct spdk_fs_channel *channel = spdk_io_channel_get_ctx(_channel);
+    int rc;
+
+	BLOBFS_TRACE_RW(file, "offset=%jx length=%jx\n", offset, length);
+
+	if (length == 0) {
+		return 0;
+	}
+
+    rc = __send_rw_from_file(file, &channel->sem, payload, offset, length, false);
+    sem_wait(&channel->sem);
+    return rc;
+}
+
+
 static void
 __readahead_done(void *arg, int bserrno)
 {
@@ -2410,6 +2429,54 @@ spdk_file_read(struct spdk_file *file, struct spdk_io_channel *_channel,
 	}
 }
 
+int64_t
+spdk_file_read_direct(struct spdk_file *file, struct spdk_io_channel *_channel,
+	       void *payload, uint64_t offset, uint64_t length)
+{
+	struct spdk_fs_channel *channel = spdk_io_channel_get_ctx(_channel);
+	uint64_t final_offset, final_length;
+	uint32_t sub_reads = 0;
+	int rc = 0;
+
+	BLOBFS_TRACE_RW(file, "offset=%ju length=%ju\n", offset, length);
+
+    if (length == 0) {
+        return 0;
+    }
+
+	pthread_spin_lock(&file->lock);
+
+	file->open_for_writing = false;
+
+	if (offset + length > file->append_pos) {
+		length = file->append_pos - offset;
+	}
+
+	final_length = 0;
+	final_offset = offset + length;
+	while (offset < final_offset) {
+        pthread_spin_unlock(&file->lock);
+        rc = __send_rw_from_file(file, &channel->sem, payload, offset, length, true);
+        pthread_spin_lock(&file->lock);
+		if (rc == 0) {
+			final_length += length;
+		} else {
+			break;
+		}
+		payload += length;
+		offset += length;
+		sub_reads++;
+	}
+	pthread_spin_unlock(&file->lock);
+	while (sub_reads-- > 0) {
+		sem_wait(&channel->sem);
+	}
+	if (rc == 0) {
+		return final_length;
+	} else {
+		return rc;
+	}
+}
 static void
 _file_sync(struct spdk_file *file, struct spdk_fs_channel *channel,
 	   spdk_file_op_complete cb_fn, void *cb_arg)
