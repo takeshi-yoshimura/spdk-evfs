@@ -339,6 +339,9 @@ uint64_t spdk_file_get_length(struct spdk_file *file);
 int spdk_file_write(struct spdk_file *file, struct spdk_io_channel *channel,
 		    void *payload, uint64_t offset, uint64_t length);
 
+int spdk_file_write_buffered(struct spdk_file *file, struct spdk_io_channel *channel,
+		    void *payload, uint64_t offset, uint64_t length);
+
 int spdk_file_write_direct(struct spdk_file *file, struct spdk_io_channel *channel,
 		    void *payload, uint64_t offset, uint64_t length);
 
@@ -354,6 +357,9 @@ int spdk_file_write_direct(struct spdk_file *file, struct spdk_io_channel *chann
  * \return the end position of this read operation on success, negated errno on failure.
  */
 int64_t spdk_file_read(struct spdk_file *file, struct spdk_io_channel *channel,
+		       void *payload, uint64_t offset, uint64_t length);
+
+int64_t spdk_file_read_buffered(struct spdk_file *file, struct spdk_io_channel *channel,
 		       void *payload, uint64_t offset, uint64_t length);
 
 int64_t spdk_file_read_direct(struct spdk_file *file, struct spdk_io_channel *channel,
