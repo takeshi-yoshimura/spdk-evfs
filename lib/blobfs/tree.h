@@ -39,7 +39,10 @@ struct cache_buffer {
 	uint64_t		offset;
 	uint32_t		buf_size;
 	uint32_t		bytes_filled;
-	uint32_t		bytes_flushed;
+	union {
+		uint32_t bytes_flushed;
+		bool dirty;
+	};
 	bool			in_progress;
 };
 
