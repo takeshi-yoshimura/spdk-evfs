@@ -153,6 +153,7 @@ struct spdk_fs_cb_args {
 			uint64_t	start_lba;
 			uint64_t	num_lba;
 			uint32_t	blocklen;
+			bool cachemiss;
 		} rw;
 		struct {
 			const char	*old_name;
@@ -2239,59 +2240,6 @@ spdk_file_write(struct spdk_file *file, struct spdk_io_channel *_channel,
 	return 0;
 }
 
-static void __check_buffer_sync_reqs(struct spdk_file *file);
-
-static void
-__buffer_flush_finish_sync(void *ctx, int bserrno)
-{
-	struct spdk_file *file = ctx;
-	struct spdk_fs_request *sync_req;
-	struct spdk_fs_cb_args *sync_args;
-
-	pthread_spin_lock(&file->lock);
-	sync_req = TAILQ_FIRST(&file->sync_requests);
-	sync_args = &sync_req->args;
-	assert(sync_args->op.sync.offset <= file->length_flushed);
-	BLOBFS_TRACE(file, "sync done offset=%jx\n", sync_args->op.sync.offset);
-	TAILQ_REMOVE(&file->sync_requests, sync_req, args.op.sync.tailq);
-	pthread_spin_unlock(&file->lock);
-
-	sync_args->fn.file_op(sync_args->arg, bserrno);
-	__check_buffer_sync_reqs(file);
-
-	pthread_spin_lock(&file->lock);
-	free_fs_request(sync_req);
-	pthread_spin_unlock(&file->lock);
-}
-
-static void
-__check_buffer_sync_reqs(struct spdk_file *file)
-{
-	struct spdk_fs_request *sync_req;
-
-	pthread_spin_lock(&file->lock);
-
-	TAILQ_FOREACH(sync_req, &file->sync_requests, args.op.sync.tailq) {
-		if (sync_req->args.op.sync.offset <= file->length_flushed) {
-			break;
-		}
-	}
-
-	if (sync_req != NULL && !sync_req->args.op.sync.xattr_in_progress) {
-		BLOBFS_TRACE(file, "set xattr length 0x%jx\n", file->length_flushed);
-		sync_req->args.op.sync.xattr_in_progress = true;
-		spdk_blob_set_xattr(file->blob, "length", &file->length_flushed,
-							sizeof(file->length_flushed));
-
-		pthread_spin_unlock(&file->lock);
-		spdk_blob_sync_md(file->blob, __buffer_flush_finish_sync, file);
-	} else {
-		pthread_spin_unlock(&file->lock);
-	}
-}
-
-
-
 static void
 __readahead_done(void *arg, int bserrno)
 {
@@ -2699,8 +2647,9 @@ cache_free_buffers(struct spdk_file *file)
 
 /* new interfaces for supporting random access and direct I/O in BlobFS */
 #include <barrier.h>
+#include <lib/blob/blobstore.h>
 
-static struct cache_buffer * blobfs2_alloc_buffer()
+static struct cache_buffer * blobfs2_alloc_buffer(struct spdk_blob_store * bs)
 {
 	struct cache_buffer *buf;
 
@@ -2710,12 +2659,17 @@ static struct cache_buffer * blobfs2_alloc_buffer()
 		return NULL;
 	}
 
-	buf->buf = spdk_mempool_get(g_cache_pool);
+	buf->buf = spdk_dma_malloc(CACHE_BUFFER_SIZE, spdk_bs_get_io_unit_size(bs), NULL);
 	if (buf->buf) {
 		buf->buf_size = CACHE_BUFFER_SIZE;
 	}
 
 	return buf;
+}
+
+static void blobfs2_free_buffer(struct cache_buffer * buf) {
+    spdk_dma_free(buf->buf);
+    free(buf);
 }
 
 void blobfs2_insert_buffer(struct spdk_file *file, struct cache_buffer * buf, uint64_t offset)
@@ -2734,125 +2688,206 @@ static void
 __blobfs2_buffer_flush_done(void *arg, int bserrno)
 {
 	struct spdk_fs_cb_args *args = arg;
-	struct spdk_file *file = args->file;
-	struct cache_buffer *next = args->op.flush.cache_buffer;
+	struct cache_buffer * buffer = args->op.flush.cache_buffer;
 
-	BLOBFS_TRACE(file, "length=%jx\n", args->op.flush.length);
+	if (bserrno != 0) {
+	    return;
+	}
 
-	pthread_spin_lock(&file->lock);
-	next->in_progress = false;
-	pthread_spin_unlock(&file->lock);
-
-	__check_buffer_sync_reqs(file);
+    pthread_mutex_lock(&buffer->mutex);
+    buffer->in_progress = false;
+    buffer->dirty = false;
+    pthread_mutex_unlock(&buffer->mutex);
 }
 
-static void
-__blobfs2_buffer_flush(void *_args)
+static void blobfs2_flush_buffer(void * _args)
 {
 	struct spdk_fs_cb_args *args = _args;
 	struct spdk_file *file = args->file;
 	struct cache_buffer * buffer = args->op.flush.cache_buffer;
 	uint64_t start_lba, num_lba;
 	uint32_t lba_size;
-	uint64_t blob_size, cluster_sz,
-
-	// check and extend blob size to cover the requested write
-			blob_size = __file_get_blob_size(file);
-	if ((offset + length) > blob_size) {
-		struct spdk_fs_cb_args extend_args = {};
-
-		cluster_sz = file->fs->bs_opts.cluster_sz;
-		extend_args.sem = &channel->sem;
-		extend_args.op.resize.num_clusters = __bytes_to_clusters((offset + length), cluster_sz);
-		extend_args.file = file;
-		BLOBFS_TRACE(file, "start resize to %u clusters\n", extend_args.op.resize.num_clusters);
-		file->fs->send_request(__file_extend_blob, &extend_args);
-		sem_wait(&channel->sem);
-		if (extend_args.rc) {
-			SPDK_ERRLOG("failed to expand blob\n");
-			return extend_args.rc;
-		}
-	}
 
 	__get_page_parameters(file, buffer->offset, buffer->buf_size, &start_lba, &lba_size, &num_lba);
 
-	buffer->in_progress = true;
-	BLOBFS_TRACE(file, "offset=%jx length=%jx page start=%jx num=%jx\n",
-				 offset, length, start_lba, num_lba);
-	spdk_blob_io_write(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
-					   buffer->buf + (start_lba * lba_size) - buffer->offset,
-					   start_lba, num_lba, __blobfs2_buffer_flush_done, args);
+    pthread_mutex_lock(&buffer->mutex);
+	if (buffer->in_progress) {
+        pthread_mutex_unlock(&buffer->mutex);
+        BLOBFS_TRACE(file, "SKIP: offset=%jx length=%jx page start=%jx num=%jx\n",
+                     offset, length, start_lba, num_lba);
+	} else {
+        buffer->in_progress = true;
+        pthread_mutex_unlock(&buffer->mutex);
+        BLOBFS_TRACE(file, "offset=%jx length=%jx page start=%jx num=%jx\n",
+                     offset, length, start_lba, num_lba);
+        spdk_blob_io_write(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
+                           buffer->buf + (start_lba * lba_size) - buffer->offset,
+                           start_lba, num_lba, __blobfs2_buffer_flush_done, args);
+    }
 }
 
-void
-blobfs2_flush_buffer(struct spdk_file * file, struct cache_buffer * buffer) {
-	struct spdk_fs_cb_args * args;
-	args = calloc(1, sizeof(*args));
-	if (!args) {
-		SPDK_ERRLOG("failed to calloc\n");
-		return;
-	}
-	args->file = file;
-	args->op.flush.cache_buffer = buffer;
-	args->op.flush.length = buffer->buf_size;
-	file->fs->send_request(__blobfs2_buffer_flush, args);
+static void __blobfs2_write_copy_buffer(void * arg, int bserrno)
+{
+    struct spdk_fs_request * req = arg;
+    struct spdk_fs_cb_args * args = &req->args;
+    struct spdk_file * file = args->file;
+    struct cache_buffer * buffer = args->op.flush.cache_buffer;
+    void * payload = args->op.rw.user_buf;
+    uint64_t offset = args->op.rw.offset;
+    uint64_t length = args->op.rw.length;
+
+    if (bserrno != 0) {
+        return;
+    }
+
+    // TODO: buffer->in_progress during syncing
+    pthread_mutex_lock(&buffer->mutex);
+    int64_t copylen = (offset + length < buffer->offset + buffer->buf_size ? length: buffer->buf_size) - (offset - buffer->offset);
+    memcpy(buffer->buf + offset - buffer->offset, payload, copylen);
+    buffer->dirty = true;
+    pthread_mutex_unlock(&buffer->mutex);
+
+    pthread_spin_lock(&file->lock);
+    if (file->length < offset + length) {
+        file->length = offset + length;
+    }
+    if (args->op.rw.cachemiss) {
+        blobfs2_insert_buffer(file, buffer, offset - offset % buffer->buf_size);
+    }
+    pthread_spin_unlock(&file->lock);
+
+    if (g_fs_sync) {
+        blobfs2_flush_buffer(arg);
+    }
+}
+
+static void __blobfs2_write_cachemiss(void * _args)
+{
+    struct spdk_fs_cb_args * args = _args;
+    struct spdk_file * file = args->file;
+    struct cache_buffer * buffer;
+    uint64_t offset = args->op.rw.offset;
+    uint64_t length = args->op.rw.length;
+    uint64_t filesize;
+    uint64_t start_lba, num_lba;
+    uint32_t lba_size;
+
+    pthread_spin_lock(&file->lock);
+    filesize = file->length;
+    pthread_spin_unlock(&file->lock);
+
+    args->op.rw.cachemiss = true;
+    buffer = blobfs2_alloc_buffer(file->fs->bs);
+    if (!buffer) {
+        SPDK_ERRLOG("failed to alloc memory\n");
+        return;
+    }
+
+    // check aligned/append write
+    if ((offset % buffer->buf_size == 0 && length % buffer->buf_size == 0) || offset + length >= filesize) {
+        // we don't need fetch before write. so copy and return immediately.
+        args->op.flush.cache_buffer = buffer;
+        __blobfs2_write_copy_buffer(args, 0);
+        return;
+    }
+
+    // setup callbacks for fetching
+    __get_page_parameters(file, buffer->offset, buffer->buf_size, &start_lba, &lba_size, &num_lba);
+    spdk_blob_io_read(args->file->blob, args->op.rw.channel, buffer, start_lba, num_lba, __blobfs2_write_copy_buffer, _args);
+}
+
+static void __blobfs2_resize_done(void * _args, int bserrno) {
+    if (bserrno == 0) {
+        __blobfs2_write_cachemiss(_args);
+    } else {
+        free_fs_request(_args);
+    }
+}
+
+static void __blobfs2_write_resize(void *_args, int bserrno) {
+    if (bserrno == 0) {
+        struct spdk_fs_cb_args * args = _args;
+        struct spdk_file * file = args->file;
+        args->op.truncate.length = args->op.rw.offset + args->op.rw.length;
+        uint64_t * length = &args->op.truncate.length;
+
+        pthread_spin_lock(&file->lock);
+        file->length = *length;
+        pthread_spin_unlock(&file->lock);
+
+        spdk_blob_set_xattr(file->blob, "length", length, sizeof(*length));
+        spdk_blob_sync_md(args->file->blob, __blobfs2_resize_done, args);
+    } else {
+        free_fs_request(_args);
+    }
+}
+
+static void __blobfs2_write(void * _args)
+{
+    struct spdk_fs_request * req = _args;
+    struct spdk_fs_cb_args * args = &req->args;
+    struct spdk_file * file = args->file;
+    struct cache_buffer * buffer;
+    uint64_t offset = args->op.rw.offset;
+    uint64_t length = args->op.rw.length;
+    uint64_t file_size;
+
+    pthread_spin_lock(&file->lock);
+    buffer = spdk_tree_find_buffer(file->tree, offset);
+    file_size = file->length;
+    pthread_spin_unlock(&file->lock);
+
+    if (buffer) {
+        // cache hit. copy and return immediately.
+        args->op.flush.cache_buffer = buffer;
+        __blobfs2_write_copy_buffer(args, 0);
+        return;
+    }
+
+    // check and extend file size to cover the requested write
+    if (offset + length > file_size) {
+        // __blobfs2_write_resize eventually calls blobfs2_write_cachemiss after on-disk metadata is updated
+        uint64_t sz = __bytes_to_clusters(offset + length, file->fs->bs->cluster_sz);
+        spdk_blob_resize(file->blob, sz, __blobfs2_write_resize, args);
+        return;
+    }
+
+    __blobfs2_write_cachemiss(_args);
 }
 
 int64_t
 blobfs2_write(struct spdk_file *file, struct spdk_io_channel *_channel,
 						 void *payload, uint64_t offset, uint64_t length)
 {
-	struct spdk_fs_channel *channel = spdk_io_channel_get_ctx(_channel);
-	int rc = 0;
-	uint64_t filesize;
-	struct cache_buffer * buffer;
-	int64_t copylen;
+    struct spdk_fs_channel * channel;
+    struct spdk_fs_request * req;
 
-	BLOBFS_TRACE_RW(file, "offset=%jx length=%jx\n", offset, length);
+    BLOBFS_TRACE_RW(file, "offset=%jx length=%jx\n", offset, length);
 
-	pthread_spin_lock(&file->lock);
-	filesize = file->length;
-	buffer = spdk_tree_find_buffer(file->tree, offset);
-	if (offset + length >= filesize) {
-		file->length = offset + length;
-	}
-	pthread_spin_unlock(&file->lock);
+    if (length == 0) {
+        return 0;
+    }
 
-	if (!buffer) {
-		// cache miss. fetch on-disk data
-		buffer = blobfs2_alloc_buffer();
-		if (offset < filesize && !(offset % buffer->buf_size == 0 && length % buffer->buf_size == 0)) {
-			struct cache_buffer *tmp;
-			uint64_t off = offset - offset % buffer->buf_size;
-			uint64_t len = off + buffer->buf_size < filesize ? buffer->buf_size : (filesize - off);
-			rc = __send_rw_from_file(file, &channel->sem, buffer->buf, off, len, true);
-			if (rc) {
-				SPDK_ERRLOG("failed to fetch on-disk data before write\n");
-				spdk_cache_buffer_free(buffer);
-				return rc;
-			}
-			sem_wait(&channel->sem);
+    channel = spdk_io_channel_get_ctx(_channel);
+    if (!channel) {
+        return -EINVAL;
+    }
 
-			pthread_spin_lock(&file->lock);
-			tmp = spdk_tree_find_buffer(file->tree, off);
-			if (!tmp) {
-				blobfs2_insert_buffer(file, buffer, off);
-			} else {
-				buffer = tmp;
-			}
-			pthread_spin_unlock(&file->lock);
-		}
-	}
+    req = alloc_fs_request(channel);
+    if (!req) {
+        return -ENOMEM;
+    }
 
-	copylen = (offset + length < buffer->offset + buffer->buf_size ? length: buffer->buf_size) - (offset - buffer->offset);
-	memcpy(buffer->buf + offset - buffer->offset, payload, copylen);
-	buffer->dirty = true;
-	spdk_smp_rmb();
+    // setup a non-blocking call to avoid blocking at racy buffer cache update
+    req->args.file = file;
+    req->args.op.rw.offset = offset;
+    req->args.op.rw.length = length;
+    req->args.op.rw.user_buf = payload;
+    req->args.op.rw.channel = _channel;
+    channel->send_request(__blobfs2_write, &req->args);
 
-	if (g_fs_sync) {
-		blobfs2_flush_buffer(file, buffer);
-	}
-	return copylen;
+    // POSIX allows returning a success whether or not the physical write succeeds.
+    return length;
 }
 
 int
@@ -2874,14 +2909,86 @@ blobfs2_write_direct(struct spdk_file *file, struct spdk_io_channel *_channel,
 }
 
 
+static void __blobfs2_read_copy_buffer(void * arg, int bserrno)
+{
+    struct spdk_fs_request * req = arg;
+    struct spdk_fs_cb_args * args = &req->args;
+    struct spdk_file * file = args->file;
+    struct cache_buffer * buffer = args->op.flush.cache_buffer;
+    void * payload = args->op.rw.user_buf;
+    uint64_t offset = args->op.rw.offset;
+    uint64_t length = args->op.rw.length;
+
+    args->rc = bserrno;
+
+    if (bserrno != 0) {
+        sem_post(args->sem);
+        return;
+    }
+
+    // TODO: buffer->in_progress during syncing
+    pthread_mutex_lock(&buffer->mutex);
+    int64_t copylen = (offset + length < buffer->offset + buffer->buf_size ? length: buffer->buf_size) - (offset - buffer->offset);
+    memcpy(buffer->buf + offset - buffer->offset, payload, copylen);
+    buffer->dirty = false;
+    pthread_mutex_unlock(&buffer->mutex);
+
+    pthread_spin_lock(&file->lock);
+    if (file->length < offset + length) {
+        file->length = offset + length;
+    }
+    if (args->op.rw.cachemiss) {
+        blobfs2_insert_buffer(file, buffer, offset - offset % buffer->buf_size);
+    }
+    pthread_spin_unlock(&file->lock);
+
+    sem_post(args->sem);
+}
+
+static int64_t __blobfs2_read_cachemiss(struct spdk_file *file, struct spdk_io_channel *_channel,
+                                     void *payload, uint64_t offset, uint64_t length)
+{
+    struct spdk_fs_channel * channel;
+    struct spdk_fs_request * req;
+    struct cache_buffer * buffer;
+    uint64_t start_lba, num_lba;
+    uint32_t lba_size;
+
+    channel = spdk_io_channel_get_ctx(_channel);
+    if (!channel) {
+        return -EINVAL;
+    }
+
+    req = alloc_fs_request(channel);
+    if (!req) {
+        return -ENOMEM;
+    }
+
+    buffer = blobfs2_alloc_buffer(file->fs->bs);
+    if (!buffer) {
+        SPDK_ERRLOG("failed to alloc memory\n");
+        return -ENOMEM;
+    }
+
+    req->args.op.rw.cachemiss = true;
+    req->args.file = file;
+    req->args.op.rw.offset = offset;
+    req->args.op.rw.length = length;
+    req->args.op.rw.user_buf = payload;
+    req->args.op.rw.channel = _channel;
+
+    __get_page_parameters(file, buffer->offset, buffer->buf_size, &start_lba, &lba_size, &num_lba);
+    spdk_blob_io_read(file->blob, _channel, buffer, start_lba, num_lba, __blobfs2_read_copy_buffer, req);
+    sem_wait(&channel->sem);
+}
+
 
 int64_t
 blobfs2_read(struct spdk_file *file, struct spdk_io_channel *_channel,
 						void *payload, uint64_t offset, uint64_t length)
 {
-	struct spdk_fs_channel *channel = spdk_io_channel_get_ctx(_channel);
 	struct cache_buffer * buffer, * tmp;
-	int rc = 0;
+    int rc = 0;
 	uint64_t copylen;
 
 	BLOBFS_TRACE_RW(file, "offset=%ju length=%ju\n", offset, length);
@@ -2891,41 +2998,28 @@ blobfs2_read(struct spdk_file *file, struct spdk_io_channel *_channel,
 	}
 
 	pthread_spin_lock(&file->lock);
-
-	file->open_for_writing = false;
-
 	if (offset + length > file->length) {
 		length = file->length - offset;
 	}
-
 	buffer = spdk_tree_find_buffer(file->tree, offset);
+    pthread_spin_unlock(&file->lock);
+
 	if (buffer) {
-		pthread_spin_unlock(&file->lock);
 		goto copy_buffer;
 	}
-	pthread_spin_unlock(&file->lock);
 
-	// fill the buffer
-	buffer = blobfs2_alloc_buffer();
-	rc = __send_rw_from_file(file, &channel->sem, buffer->buf, offset - offset % buffer->buf_size, buffer->buf_size, true);
-	if (rc != 0) {
-		spdk_cache_buffer_free(buffer);
-		return rc;
-	}
-	sem_wait(&channel->sem);
+	// fill the buffer. this is a blocking operation
+	__blobfs2_read_cachemiss(file, _channel, payload, offset, length);
 
 	pthread_spin_lock(&file->lock);
-	tmp = spdk_tree_find_buffer(file->tree, offset);
-	if (!tmp) {
-		blobfs2_insert_buffer(file, buffer, offset - offset % buffer->buf_size);
-	} else {
-		buffer = tmp;
-	}
+    buffer = spdk_tree_find_buffer(file->tree, offset);
 	pthread_spin_unlock(&file->lock);
 
 copy_buffer:
+    pthread_mutex_lock(&buffer->mutex);
 	copylen = (offset + length < buffer->offset + buffer->buf_size ? length: buffer->buf_size) - (offset - buffer->offset);
 	memcpy(payload, buffer->buf + offset - buffer->offset, copylen);
+    pthread_mutex_unlock(&buffer->mutex);
 	return copylen;
 }
 
@@ -2982,57 +3076,19 @@ static void
 __blobfs2_sync(struct spdk_file *file, struct spdk_fs_channel *channel,
 		   spdk_file_op_complete cb_fn, void *cb_arg)
 {
-	struct spdk_fs_request *sync_req;
-	struct spdk_fs_request *flush_req;
-	struct spdk_fs_cb_args *sync_args;
-	struct spdk_fs_cb_args *flush_args;
 	uint64_t off;
-
-	BLOBFS_TRACE(file, "offset=%jx\n", file->append_pos);
 
 	pthread_spin_lock(&file->lock);
 	for (off = 0; off < file->length; off += CACHE_BUFFER_SIZE) {
 		struct cache_buffer * buffer = spdk_tree_find_buffer(file->tree, off);
-		if (!buffer || !buffer->dirty) {
+        pthread_spin_unlock(&file->lock);
+
+		if (!buffer || !buffer->dirty || buffer->in_progress) {
 			continue;
 		}
-		pthread_spin_unlock(&file->lock);
 		blobfs2_flush_buffer(file, buffer);
 		pthread_spin_lock(&file->lock);
 	}
-	if (file->append_pos <= file->length_flushed) {
-		BLOBFS_TRACE(file, "done - no data to flush\n");
-		pthread_spin_unlock(&file->lock);
-		cb_fn(cb_arg, 0);
-		return;
-	}
-
-	sync_req = alloc_fs_request(channel);
-	if (!sync_req) {
-		pthread_spin_unlock(&file->lock);
-		cb_fn(cb_arg, -ENOMEM);
-		return;
-	}
-	sync_args = &sync_req->args;
-
-	flush_req = alloc_fs_request(channel);
-	if (!flush_req) {
-		pthread_spin_unlock(&file->lock);
-		cb_fn(cb_arg, -ENOMEM);
-		return;
-	}
-	flush_args = &flush_req->args;
-
-	sync_args->file = file;
-	sync_args->fn.file_op = cb_fn;
-	sync_args->arg = cb_arg;
-	sync_args->op.sync.offset = file->append_pos;
-	sync_args->op.sync.xattr_in_progress = false;
-	TAILQ_INSERT_TAIL(&file->sync_requests, sync_req, args.op.sync.tailq);
-	pthread_spin_unlock(&file->lock);
-
-	flush_args->file = file;
-	channel->send_request(__blobfs2_buffer_flush, flush_args);
 }
 
 int
