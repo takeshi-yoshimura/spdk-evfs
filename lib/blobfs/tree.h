@@ -34,6 +34,8 @@
 #ifndef SPDK_TREE_H_
 #define SPDK_TREE_H_
 
+#include "spdk/queue.h"
+
 struct cache_buffer {
 	uint8_t			*buf;
 	uint64_t		offset;
@@ -44,6 +46,8 @@ struct cache_buffer {
 		bool dirty;
 	};
 	bool			in_progress;
+	uint8_t ref;
+	TAILQ_ENTRY(cache_buffer)	cache_tailq;
 };
 
 extern uint32_t g_fs_cache_buffer_shift;
