@@ -196,7 +196,7 @@ struct spdk_fs_cb_args {
 };
 
 static void cache_free_buffers(struct spdk_file *file);
-static void init_blobfs2();
+static void init_blobfs2(void);
 
 void
 spdk_fs_opts_init(struct spdk_blobfs_opts *opts)
@@ -2654,7 +2654,7 @@ cache_free_buffers(struct spdk_file *file)
 static TAILQ_HEAD(, cache_buffer) g_zeroref_caches;
 static uint64_t g_dmasize = 0;
 
-static void init_blobfs2() {
+static void init_blobfs2(void) {
 	TAILQ_INIT(&g_zeroref_caches);
 }
 
@@ -2847,9 +2847,11 @@ static void __blobfs2_write_copy_buffer(void * _args, int bserrno)
 
 static void __blobfs2_write_direct_done(void * _args, int bserrno)
 {
+	struct spdk_fs_request * req = _args;
     if (bserrno) {
         SPDK_ERRLOG("write failure\n");
     }
+    spdk_dma_free(req->args.op.rw.pin_buf);
     __blobfs2_write_last(NULL, (struct spdk_fs_request *)_args);
 }
 
@@ -2866,10 +2868,20 @@ static void __blobfs2_write_cachemiss(void * _args)
         void * payload = args->op.rw.user_buf;
         uint64_t start_lba, num_lba;
         uint32_t lba_size;
+		uint64_t align = spdk_bs_get_io_unit_size(file->fs->bs);
+		// we need to alloc temporal buffer to issue DMA
+		void * dma = spdk_dma_malloc((length + align - 1) / align, align, NULL);
+		if (!dma) {
+			SPDK_ERRLOG("failed to alloc buffer\n");
+			__blobfs2_write_last(NULL, req);
+			return;
+		}
+		memcpy(dma, payload, length);
+		args->op.rw.pin_buf = dma;
 
         __get_page_parameters(file, offset, length, &start_lba, &lba_size, &num_lba);
         spdk_blob_io_write(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
-                           payload + (start_lba * lba_size) - offset,
+                           dma + (start_lba * lba_size) - offset,
                            start_lba, num_lba, __blobfs2_write_direct_done, req);
         return;
     }
@@ -3040,14 +3052,22 @@ int64_t blobfs2_read(struct spdk_file *file, struct spdk_io_channel * _channel, 
     }
 
     if (direct) {
+    	uint64_t align = spdk_bs_get_io_unit_size(file->fs->bs);
+    	// we need to alloc temporal buffer to issue DMA
+    	void * dma = spdk_dma_malloc((length + align - 1) / align, align, NULL);
+    	if (!dma) {
+    		return -ENOMEM;
+    	}
         req->args.sem = &channel->sem;
         __get_page_parameters(file, offset, length, &start_lba, &lba_size, &num_lba);
 
         // read on-disk data. this is a blocking operation
-        spdk_blob_io_read(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel, payload, start_lba, num_lba, __wake_caller, &req->args);
+        spdk_blob_io_read(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel, dma, start_lba, num_lba, __wake_caller, &req->args);
         sem_wait(&channel->sem);
         rc = req->args.rc;
         free_fs_request(req);
+        memcpy(payload, dma, length);
+        spdk_dma_free(dma);
         return rc;
     }
 
