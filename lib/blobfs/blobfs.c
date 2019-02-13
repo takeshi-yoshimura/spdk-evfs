@@ -2887,7 +2887,7 @@ static void __blobfs2_write_cachemiss(void * _args)
         uint32_t lba_size;
         __get_page_parameters(file, buffer->offset, buffer->buf_size, &start_lba, &lba_size, &num_lba);
         args->op.rw.cachemiss = true;
-        spdk_blob_io_read(args->file->blob, args->op.rw.channel, buffer, start_lba, num_lba, __blobfs2_write_copy_buffer, req);
+        spdk_blob_io_read(args->file->blob, file->fs->sync_target.sync_fs_channel->bs_channel, buffer, start_lba, num_lba, __blobfs2_write_copy_buffer, req);
     }
 }
 
@@ -2982,7 +2982,6 @@ int64_t blobfs2_write(struct spdk_file *file, struct spdk_io_channel * _channel,
     req->args.op.rw.offset = offset;
     req->args.op.rw.length = length;
     req->args.op.rw.user_buf = payload;
-    req->args.op.rw.channel = _channel;
     req->args.op.rw.direct = direct;
     channel->send_request(__blobfs2_write, req);
 
@@ -3041,7 +3040,7 @@ int64_t blobfs2_read(struct spdk_file *file, struct spdk_io_channel * _channel, 
         __get_page_parameters(file, offset, length, &start_lba, &lba_size, &num_lba);
 
         // read on-disk data. this is a blocking operation
-        spdk_blob_io_read(file->blob, channel->bs_channel, payload, start_lba, num_lba, __wake_caller, &req->args);
+        spdk_blob_io_read(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel, payload, start_lba, num_lba, __wake_caller, &req->args);
         sem_wait(&channel->sem);
         rc = req->args.rc;
         free_fs_request(req);
@@ -3060,7 +3059,7 @@ int64_t blobfs2_read(struct spdk_file *file, struct spdk_io_channel * _channel, 
     __get_page_parameters(file, buffer->offset, CACHE_BUFFER_SIZE, &start_lba, &lba_size, &num_lba);
 
     // fill the buffer. this is a blocking operation
-    spdk_blob_io_read(file->blob, channel->bs_channel, buffer, start_lba, num_lba, __wake_caller, &req->args);
+    spdk_blob_io_read(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel, buffer, start_lba, num_lba, __wake_caller, &req->args);
     sem_wait(&channel->sem);
     rc = req->args.rc;
     free_fs_request(req);
