@@ -2812,6 +2812,7 @@ static void __blobfs2_write_copy_buffer(void * _args, int bserrno)
     uint64_t offset = args->op.rw.offset;
     uint64_t length = args->op.rw.length;
     int64_t copylen;
+    uint64_t buffer_offset;
 
     if (bserrno) {
         SPDK_ERRLOG("failed to fetch on-disk data\n");
@@ -2819,8 +2820,9 @@ static void __blobfs2_write_copy_buffer(void * _args, int bserrno)
         return;
     }
 
-    copylen = (offset + length < buffer->offset + buffer->buf_size ? length: buffer->buf_size) - (offset - buffer->offset);
-    memcpy(buffer->buf + offset - buffer->offset, payload, copylen);
+    buffer_offset = offset - offset % CACHE_BUFFER_SIZE;
+    copylen = (offset + length < buffer_offset + CACHE_BUFFER_SIZE ? length: CACHE_BUFFER_SIZE - (offset - buffer_offset));
+    memcpy(buffer->buf + offset - buffer_offset, payload, copylen);
 
     if (!args->op.rw.cachemiss) {
         pthread_spin_lock(&buffer->lock);
@@ -2835,7 +2837,7 @@ static void __blobfs2_write_copy_buffer(void * _args, int bserrno)
     }
 
     if (args->op.rw.cachemiss) {
-        blobfs2_insert_buffer(file, buffer, offset - offset % buffer->buf_size);
+        blobfs2_insert_buffer(file, buffer, buffer_offset);
     }
 
     if (g_fs_sync) {
@@ -2863,6 +2865,7 @@ static void __blobfs2_write_cachemiss(void * _args)
     struct cache_buffer * buffer;
     uint64_t offset = args->op.rw.offset;
     uint64_t length = args->op.rw.length;
+    uint64_t buffer_offset;
 
     if (args->op.rw.direct) {
         void * payload = args->op.rw.user_buf;
@@ -2892,8 +2895,9 @@ static void __blobfs2_write_cachemiss(void * _args)
         __blobfs2_write_last(NULL, req);
         return;
     }
+	buffer_offset = offset - offset % CACHE_BUFFER_SIZE;
 
-    if ((offset % buffer->buf_size == 0 && length % buffer->buf_size == 0) || offset + length >= file->length) {
+    if ((offset % CACHE_BUFFER_SIZE == 0 && length % CACHE_BUFFER_SIZE == 0) || offset + length >= file->length) {
         // aligned write. we don't need fetch before write. copy and return immediately.
         args->op.flush.cache_buffer = buffer;
         __blobfs2_write_copy_buffer(req, 0);
@@ -2901,9 +2905,10 @@ static void __blobfs2_write_cachemiss(void * _args)
         // fetch on-disk data
         uint64_t start_lba, num_lba;
         uint32_t lba_size;
-        __get_page_parameters(file, buffer->offset, buffer->buf_size, &start_lba, &lba_size, &num_lba);
+        __get_page_parameters(file, buffer_offset, CACHE_BUFFER_SIZE, &start_lba, &lba_size, &num_lba);
         args->op.rw.cachemiss = true;
-        spdk_blob_io_read(args->file->blob, file->fs->sync_target.sync_fs_channel->bs_channel, buffer, start_lba, num_lba, __blobfs2_write_copy_buffer, req);
+        spdk_blob_io_read(args->file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
+        		buffer->buf, start_lba, num_lba, __blobfs2_write_copy_buffer, req);
     }
 }
 
@@ -3011,7 +3016,7 @@ int64_t blobfs2_read(struct spdk_file *file, struct spdk_io_channel * _channel, 
     struct spdk_fs_channel * channel;
     struct spdk_fs_request * req;
 	struct cache_buffer * buffer;
-	uint64_t copylen, start_lba, num_lba;
+	uint64_t copylen, start_lba, num_lba, buffer_offset;
     uint32_t lba_size;
     int64_t rc;
 	uint64_t align = spdk_bs_get_io_unit_size(file->fs->bs);
@@ -3083,9 +3088,10 @@ int64_t blobfs2_read(struct spdk_file *file, struct spdk_io_channel * _channel, 
         free_fs_request(req);
         return -ENOMEM;
     }
+    buffer_offset = offset - offset % CACHE_BUFFER_SIZE;
 
     req->args.sem = &channel->sem;
-    __get_page_parameters(file, buffer->offset, CACHE_BUFFER_SIZE, &start_lba, &lba_size, &num_lba);
+    __get_page_parameters(file, buffer_offset, CACHE_BUFFER_SIZE, &start_lba, &lba_size, &num_lba);
 
     // fill the buffer. this is a blocking operation
     spdk_blob_io_read(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel, buffer->buf, start_lba, num_lba, __wake_caller, &req->args);
@@ -3098,10 +3104,10 @@ int64_t blobfs2_read(struct spdk_file *file, struct spdk_io_channel * _channel, 
         return rc;
     }
 
-    copylen = (offset + length < buffer->offset + CACHE_BUFFER_SIZE ? length: CACHE_BUFFER_SIZE) - (offset - buffer->offset);
-    memcpy(payload, buffer->buf + offset - buffer->offset, copylen);
+    copylen = (offset + length < buffer_offset + CACHE_BUFFER_SIZE ? length: CACHE_BUFFER_SIZE - (offset - buffer_offset));
+    memcpy(payload, buffer->buf + offset - buffer_offset, copylen);
 
-    blobfs2_insert_buffer(file, buffer, offset - offset % CACHE_BUFFER_SIZE);
+    blobfs2_insert_buffer(file, buffer, buffer_offset);
     blobfs2_put_buffer(buffer);
 
     return copylen;
