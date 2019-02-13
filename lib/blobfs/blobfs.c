@@ -3016,7 +3016,7 @@ int64_t blobfs2_read(struct spdk_file *file, struct spdk_io_channel * _channel, 
     struct spdk_fs_channel * channel;
     struct spdk_fs_request * req;
 	struct cache_buffer * buffer;
-	uint64_t copylen, start_lba, num_lba, buffer_offset;
+	uint64_t copylen, start_lba, num_lba, buffer_offset = offset - offset % CACHE_BUFFER_SIZE;
     uint32_t lba_size;
     int64_t rc;
 	uint64_t align = spdk_bs_get_io_unit_size(file->fs->bs);
@@ -3038,7 +3038,7 @@ int64_t blobfs2_read(struct spdk_file *file, struct spdk_io_channel * _channel, 
 		length = file->length - offset;
 	}
 
-    buffer = blobfs2_get_buffer(file, offset);
+    buffer = blobfs2_get_buffer(file, buffer_offset);
 	if (buffer) {
 	    if (direct) {
 	        SPDK_ERRLOG("attempted direct I/O on cached data\n");
@@ -3046,8 +3046,8 @@ int64_t blobfs2_read(struct spdk_file *file, struct spdk_io_channel * _channel, 
 	        return -EINVAL;
 	    }
 	    // cache hit.
-        copylen = (offset + length < buffer->offset + CACHE_BUFFER_SIZE ? length: CACHE_BUFFER_SIZE) - (offset - buffer->offset);
-        memcpy(payload, buffer->buf + offset - buffer->offset, copylen);
+        copylen = (offset + length < buffer_offset + CACHE_BUFFER_SIZE ? length: CACHE_BUFFER_SIZE - (offset - buffer_offset));
+        memcpy(payload, buffer->buf + offset - buffer_offset, copylen);
         blobfs2_put_buffer(buffer);
         return copylen;
 	}
@@ -3088,7 +3088,6 @@ int64_t blobfs2_read(struct spdk_file *file, struct spdk_io_channel * _channel, 
         free_fs_request(req);
         return -ENOMEM;
     }
-    buffer_offset = offset - offset % CACHE_BUFFER_SIZE;
 
     req->args.sem = &channel->sem;
     __get_page_parameters(file, buffer_offset, CACHE_BUFFER_SIZE, &start_lba, &lba_size, &num_lba);
