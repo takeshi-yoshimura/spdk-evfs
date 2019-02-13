@@ -86,6 +86,7 @@ struct spdk_file {
 	spdk_blob_id		blobid;
 	uint32_t		ref_count;
 	pthread_spinlock_t	lock;
+	pthread_spinlock_t	syncreq_lock;
 	struct cache_buffer	*last;
 	struct cache_tree	*tree;
 	TAILQ_HEAD(open_requests_head, spdk_fs_request) open_requests;
@@ -537,6 +538,7 @@ file_alloc(struct spdk_filesystem *fs)
 	TAILQ_INIT(&file->open_requests);
 	TAILQ_INIT(&file->sync_requests);
 	pthread_spin_init(&file->lock, 0);
+	pthread_spin_init(&file->syncreq_lock, 0);
 	TAILQ_INSERT_TAIL(&fs->files, file, tailq);
 	file->priority = SPDK_FILE_PRIORITY_LOW;
 	return file;
