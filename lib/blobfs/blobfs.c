@@ -3163,25 +3163,6 @@ int64_t blobfs2_read(struct spdk_file *file, struct spdk_io_channel * _channel, 
     return copylen;
 }
 
-static void __blobfs2_offset_flush_done(void * _args, int bserrno)
-{
-	struct spdk_fs_request * req = _args;
-    struct spdk_fs_cb_args * args = &req->args;
-    struct cache_buffer * buffer = args->op.flush.cache_buffer;
-
-    if (bserrno == 0) {
-        pthread_spin_lock(&buffer->lock);
-        buffer->in_progress = false;
-        buffer->dirty = false;
-        pthread_spin_unlock(&buffer->lock);
-    } else {
-        SPDK_ERRLOG("flush failure\n");
-    }
-	blobfs2_put_buffer(buffer);
-	args->rc = bserrno;
-	sem_post(args->sem);
-}
-
 static int __blobfs2_sync_nosyncfs(struct spdk_file * file, struct spdk_fs_channel * channel)
 {
 	struct spdk_fs_request * req;
