@@ -35,6 +35,7 @@
 #define SPDK_TREE_H_
 
 #include "spdk/queue.h"
+#include <pthread.h>
 
 struct cache_buffer {
 	uint8_t			*buf;
@@ -47,6 +48,7 @@ struct cache_buffer {
 	};
 	bool			in_progress;
 	uint8_t ref;
+	pthread_spinlock_t lock;
 	TAILQ_ENTRY(cache_buffer)	cache_tailq;
 };
 

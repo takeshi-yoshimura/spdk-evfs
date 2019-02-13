@@ -61,6 +61,12 @@ spdk_conf_section_get_intval(struct spdk_conf_section *sp, const char *key)
 	return -1;
 }
 
+bool
+spdk_conf_section_get_boolval(struct spdk_conf_section *sp, const char *key, bool default_val)
+{
+	return false;
+}
+
 static void
 _fs_send_msg(spdk_thread_fn fn, void *ctx, void *thread_ctx)
 {

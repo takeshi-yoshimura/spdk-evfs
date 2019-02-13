@@ -2647,8 +2647,7 @@ cache_free_buffers(struct spdk_file *file)
 
 
 /* new interfaces for supporting random access and direct I/O in BlobFS */
-#include <barrier.h>
-#include <lib/blob/blobstore.h>
+#include "spdk/barrier.h"
 
 static TAILQ_HEAD(, cache_buffer) g_zeroref_caches;
 static uint64_t g_dmasize = 0;
@@ -2696,6 +2695,7 @@ static struct cache_buffer * blobfs2_alloc_buffer(struct spdk_blob_store * bs)
 	buf->buf_size = CACHE_BUFFER_SIZE;
 	buf->ref = 1;
 	memset(buf->buf, 0, CACHE_BUFFER_SIZE);
+	pthread_spin_init(&buf->lock, 0);
 
 	return buf;
 }
@@ -2946,7 +2946,7 @@ static void __blobfs2_write(void * _args)
     if (offset + length > file->length) {
         // cache miss due to append write
         // __blobfs2_write_resize eventually calls blobfs2_write_cachemiss after on-disk metadata is updated
-        uint64_t sz = __bytes_to_clusters(offset + length, file->fs->bs->cluster_sz);
+        uint64_t sz = __bytes_to_clusters(offset + length, file->fs->bs_opts.cluster_sz);
         spdk_blob_resize(file->blob, sz, __blobfs2_write_resize, req);
     } else {
         // cache miss
@@ -3145,7 +3145,8 @@ int blobfs2_sync(struct spdk_file * file, struct spdk_io_channel * _channel)
     struct spdk_fs_channel * channel;
     uint64_t last_buffer_index = file->length / CACHE_BUFFER_SIZE;
     struct spdk_fs_request ** reqs;
-    int i, rc;
+    uint64_t i;
+    int rc;
 
     channel = spdk_io_channel_get_ctx(_channel);
     if (!channel) {
