@@ -2700,7 +2700,7 @@ static struct cache_buffer * blobfs2_alloc_buffer(struct spdk_blob_store * bs)
 	return buf;
 }
 
-void blobfs2_insert_buffer(struct spdk_file *file, struct cache_buffer * buf, uint64_t offset)
+static void blobfs2_insert_buffer(struct spdk_file *file, struct cache_buffer * buf, uint64_t offset)
 {
 	buf->offset = offset;
 
@@ -2715,7 +2715,7 @@ void blobfs2_insert_buffer(struct spdk_file *file, struct cache_buffer * buf, ui
     pthread_spin_unlock(&file->lock);
 }
 
-struct cache_buffer * blobfs2_get_buffer(struct spdk_file * file, uint64_t offset)
+static struct cache_buffer * blobfs2_get_buffer(struct spdk_file * file, uint64_t offset)
 {
     struct cache_buffer * buffer;
     pthread_spin_lock(&file->lock);
@@ -2730,7 +2730,7 @@ struct cache_buffer * blobfs2_get_buffer(struct spdk_file * file, uint64_t offse
     return buffer;
 }
 
-void blobfs2_put_buffer(struct cache_buffer * buffer)
+static void blobfs2_put_buffer(struct cache_buffer * buffer)
 {
     if (--buffer->ref == 0) {
 		pthread_spin_lock(&g_caches_lock);
@@ -2987,7 +2987,7 @@ int64_t blobfs2_write(struct spdk_file *file, struct spdk_io_channel * _channel,
     channel->send_request(__blobfs2_write, req);
 
     // POSIX allows reporting a success whether or not the physical write succeeds.
-    return length;
+    return 0;
 }
 
 int64_t blobfs2_read(struct spdk_file *file, struct spdk_io_channel * _channel, void *payload, uint64_t offset, uint64_t length, bool direct)

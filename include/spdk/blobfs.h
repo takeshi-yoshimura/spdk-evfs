@@ -339,11 +339,8 @@ uint64_t spdk_file_get_length(struct spdk_file *file);
 int spdk_file_write(struct spdk_file *file, struct spdk_io_channel *channel,
 		    void *payload, uint64_t offset, uint64_t length);
 
-int64_t spdk_file_write_buffered(struct spdk_file *file, struct spdk_io_channel *channel,
-		    void *payload, uint64_t offset, uint64_t length);
-
-int spdk_file_write_direct(struct spdk_file *file, struct spdk_io_channel *channel,
-		    void *payload, uint64_t offset, uint64_t length);
+int64_t blobfs2_write(struct spdk_file *file, struct spdk_io_channel *channel,
+            void *payload, uint64_t offset, uint64_t length, bool direct);
 
 /**
  * Read data to user buffer from the given file.
@@ -359,11 +356,9 @@ int spdk_file_write_direct(struct spdk_file *file, struct spdk_io_channel *chann
 int64_t spdk_file_read(struct spdk_file *file, struct spdk_io_channel *channel,
 		       void *payload, uint64_t offset, uint64_t length);
 
-int64_t spdk_file_read_buffered(struct spdk_file *file, struct spdk_io_channel *channel,
-		       void *payload, uint64_t offset, uint64_t length);
+int64_t blobfs2_read(struct spdk_file *file, struct spdk_io_channel *channel,
+		       void *payload, uint64_t offset, uint64_t length, bool direct);
 
-int64_t spdk_file_read_direct(struct spdk_file *file, struct spdk_io_channel *channel,
-		       void *payload, uint64_t offset, uint64_t length);
 /**
  * Set cache size for the blobstore filesystem.
  *
@@ -399,6 +394,7 @@ void spdk_file_set_priority(struct spdk_file *file, uint32_t priority);
  */
 int spdk_file_sync(struct spdk_file *file, struct spdk_io_channel *channel);
 
+int blobfs2_sync(struct spdk_file *file, struct spdk_io_channel *channel);
 /**
  * Get the unique ID for the file.
  *

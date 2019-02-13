@@ -474,7 +474,7 @@ static int __hookfs_deletefile(const char * blobfspath) {
 
     uint64_t off = 0;
     while (off < stat.size) {
-        int64_t n = spdk_file_read(file, g_channel, buf, off, stat.size - off);
+        int64_t n = blobfs2_read(file, g_channel, buf, off, stat.size - off, false);
         if (n > 0) {
             off += n;
         } else {
@@ -536,7 +536,7 @@ static int __hookfs_deletefile(const char * blobfspath) {
     }
 
     if (off > 0) {
-        rc = spdk_file_write(file, g_channel, buf, 0, off);
+        rc = blobfs2_write(file, g_channel, buf, 0, off, false);
         if (rc) {
             errno = EIO;
             rc = -1;
@@ -546,7 +546,7 @@ static int __hookfs_deletefile(const char * blobfspath) {
 
     uint64_t o2 = off + 1 + strlen(base) + 1;
     if (o2 < stat.size) {
-        rc = spdk_file_write(file, g_channel, buf + o2, off, stat.size - o2);
+        rc = blobfs2_write(file, g_channel, buf + o2, off, stat.size - o2, false);
         if (rc) {
             errno = EIO;
             rc = -1;
@@ -611,7 +611,7 @@ static int __hookfs_isemptydir(const char * blobfspath) {
 
     uint64_t off = 0;
     while (off < stat.size) {
-        int64_t n = spdk_file_read(file, g_channel, buf, off, stat.size - off);
+        int64_t n = blobfs2_read(file, g_channel, buf, off, stat.size - off, false);
         if (n > 0) {
             off += n;
         } else {
@@ -674,7 +674,7 @@ static int __hookfs_addfile(const char * blobfspath, const char *filename, unsig
 
     snprintf(buf, PATH_MAX - 1, "%c%s%c", (char)d_type, filename, 0);
 //    SPDK_ERRLOG("addfile: %s, %u, %lu, %lu in %s\n", filename, d_type, stat.size, strlen(buf) + 1, blobfspath);
-    rc = spdk_file_write(file, g_channel, (void *)buf, stat.size, strlen(buf) + 1);
+    rc = blobfs2_write(file, g_channel, (void *)buf, stat.size, strlen(buf) + 1, false);
     if (rc != 0) {
         spdk_file_close(file, g_channel);
         return -rc;
@@ -894,11 +894,7 @@ static int hookfs_pread(hookfs_fd_t *fd, char * buf, size_t len, uint64_t offset
         return -1;
     }
 
-    if (oflag & O_DIRECT) {
-        rc = spdk_file_read_direct(file, g_channel, buf, offset, len);
-    } else {
-        rc = spdk_file_read(file, g_channel, buf, offset, len);
-    }
+    rc = blobfs2_read(file, g_channel, buf, offset, len, oflag & O_DIRECT);
     if (rc >= 0) {
         return (int) rc;
     }
@@ -928,11 +924,7 @@ static int hookfs_read(hookfs_fd_t *fd, char * buf, size_t len)
         return -1;
     }
 
-    if (oflag & O_DIRECT) {
-        rc = spdk_file_read_direct(file, g_channel, buf, off, len);
-    } else {
-        rc = spdk_file_read(file, g_channel, buf, off, len);
-    }
+    rc = blobfs2_read(file, g_channel, buf, off, len, oflag & O_DIRECT);
     if (rc == 0) {
         return 0;
     } else if (rc > 0) {
@@ -998,11 +990,7 @@ static int hookfs_pwrite(hookfs_fd_t * fd, const char * buf, size_t len, uint64_
         return -1;
     }
 
-    if (oflag & O_DIRECT) {
-        rc = spdk_file_write_direct(file, g_channel, (void *)buf, offset, len);
-    } else {
-        rc = spdk_file_write(file, g_channel, (void *)buf, offset, len);
-    }
+    rc = blobfs2_write(file, g_channel, (void *)buf, offset, len, oflag & O_DIRECT);
     if (rc == 0) {
         return (int)len;
     } else {
@@ -1032,11 +1020,7 @@ static int hookfs_write(hookfs_fd_t * fd, const char * buf, size_t len) {
         return -1;
     }
 
-    if (oflag & O_DIRECT) {
-        rc = spdk_file_write_direct(file, g_channel, (void *)buf, off, len);
-    } else {
-        rc = spdk_file_write(file, g_channel, (void *)buf, off, len);
-    }
+    rc = blobfs2_write(file, g_channel, (void *)buf, off, len, oflag & O_DIRECT);
     if (rc == 0) {
         pthread_rwlock_wrlock(&fd->lock);
         fd->offset += len;
@@ -1390,7 +1374,7 @@ static int hookfs_fsync(hookfs_fd_t * fd) {
         errno = EBADF;
         return -1;
     }
-    return spdk_file_sync(file, g_channel);
+    return blobfs2_sync(file, g_channel);
 }
 
 int fsync(int fd) {
@@ -1569,7 +1553,7 @@ static struct dirent * hookfs_readdir(DIR * _dirp) {
         if (dirp->__dd_loc < dirp->__dd_size) {
             char * src = dirp->__dd_buf;
             struct dirent * d = (struct dirent *)(src + HOOKFS_PAGE_SIZE);
-            long rc = spdk_file_read(fds[dirp->__dd_fd].file, g_channel, src, dirp->__dd_loc, HOOKFS_PAGE_SIZE);
+            long rc = blobfs2_read(fds[dirp->__dd_fd].file, g_channel, src, dirp->__dd_loc, HOOKFS_PAGE_SIZE, false);
             if (rc < 0) {
                 return NULL;
             }
