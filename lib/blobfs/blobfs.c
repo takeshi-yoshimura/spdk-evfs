@@ -2656,6 +2656,9 @@ static uint64_t g_dmasize = 0;
 
 static void init_blobfs2(void) {
 	TAILQ_INIT(&g_zeroref_caches);
+	if (CACHE_BUFFER_SIZE < sysconf(_SC_PAGESIZE)) {
+		SPDK_WARNLOG("CacheBufferShift should be larger than page shift for this platform. This hurts Blobfs2 performance\n");
+	}
 }
 
 static void blobfs2_free_buffer(struct cache_buffer * buf) {
@@ -2708,8 +2711,6 @@ static struct cache_buffer * blobfs2_alloc_buffer(struct spdk_blob_store * bs)
 
 static void blobfs2_insert_buffer(struct spdk_file *file, struct cache_buffer * buf, uint64_t offset)
 {
-	buf->offset = offset;
-
 	pthread_spin_lock(&g_caches_lock);
 	if (file->tree->present_mask == 0) {
 		TAILQ_INSERT_TAIL(&g_caches, file, cache_tailq);
@@ -2781,8 +2782,10 @@ static void __blobfs2_flush_buffer(void * _args)
     struct spdk_fs_cb_args * args = &req->args;
 	struct spdk_file *file = args->file;
 	struct cache_buffer * buffer = args->op.flush.cache_buffer;
+	uint64_t offset = args->op.rw.offset;
 	uint64_t start_lba, num_lba;
 	uint32_t lba_size;
+	uint64_t buffer_offset = offset - offset % CACHE_BUFFER_SIZE;
 
     pthread_spin_lock(&buffer->lock);
 
@@ -2796,9 +2799,9 @@ static void __blobfs2_flush_buffer(void * _args)
     buffer->in_progress = true;
     pthread_spin_unlock(&buffer->lock);
 
-    __get_page_parameters(file, buffer->offset, buffer->buf_size, &start_lba, &lba_size, &num_lba);
+    __get_page_parameters(file, buffer_offset, CACHE_BUFFER_SIZE, &start_lba, &lba_size, &num_lba);
     spdk_blob_io_write(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
-                       buffer->buf + (start_lba * lba_size) - buffer->offset,
+                       buffer->buf + (start_lba * lba_size) - buffer_offset,
                        start_lba, num_lba, __blobfs2_buffer_flush_done, req);
 }
 
@@ -3167,14 +3170,14 @@ static void blobfs2_flush_offset(void * _args)
 
     __get_page_parameters(file, offset, CACHE_BUFFER_SIZE, &start_lba, &lba_size, &num_lba);
     spdk_blob_io_write(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
-                       buffer->buf + (start_lba * lba_size) - buffer->offset,
+                       buffer->buf + (start_lba * lba_size) - offset,
                        start_lba, num_lba, __blobfs2_offset_flush_done, args);
 }
 
 int blobfs2_sync(struct spdk_file * file, struct spdk_io_channel * _channel)
 {
     struct spdk_fs_channel * channel;
-    uint64_t last_buffer_index = file->length / CACHE_BUFFER_SIZE;
+    uint64_t last_buffer_index = file->length / CACHE_BUFFER_SIZE + 1;
     struct spdk_fs_request ** reqs;
     uint64_t i;
     int rc;
@@ -3226,6 +3229,31 @@ free_reqs:
     }
     free(reqs);
 	return rc;
+}
+
+int blobfs2_close(struct spdk_file * file, struct spdk_io_channel * _channel)
+{
+	struct spdk_fs_channel * channel = spdk_io_channel_get_ctx(_channel);
+	struct spdk_fs_request * req;
+	struct spdk_fs_cb_args * args;
+
+	req = alloc_fs_request(channel);
+	if (req == NULL) {
+		return -ENOMEM;
+	}
+
+	args = &req->args;
+
+	blobfs2_sync(file, _channel);
+	BLOBFS_TRACE(file, "name=%s\n", file->name);
+	args->file = file;
+	args->sem = &channel->sem;
+	args->fn.file_op = __wake_caller;
+	args->arg = req;
+	channel->send_request(__file_close, req);
+	sem_wait(&channel->sem);
+
+	return args->rc;
 }
 
 SPDK_LOG_REGISTER_COMPONENT("blobfs", SPDK_LOG_BLOBFS)

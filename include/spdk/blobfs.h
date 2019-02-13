@@ -246,6 +246,7 @@ int spdk_fs_open_file(struct spdk_filesystem *fs, struct spdk_io_channel *channe
  * \return 0 on success, negative errno on failure.
  */
 int spdk_file_close(struct spdk_file *file, struct spdk_io_channel *channel);
+int blobfs2_close(struct spdk_file *file, struct spdk_io_channel *channel);
 
 /**
  * Change the file name.

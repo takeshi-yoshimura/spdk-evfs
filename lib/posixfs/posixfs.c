@@ -486,7 +486,7 @@ static int __hookfs_deletefile(const char * blobfspath) {
         rc = -1;
         goto close_file;
     }
-    spdk_file_close(file, g_channel); // ensure finishing the above file read here
+    blobfs2_close(file, g_channel); // ensure finishing the above file read here
 
     off = 0;
     while (off < stat.size) {
@@ -527,7 +527,7 @@ static int __hookfs_deletefile(const char * blobfspath) {
         goto close_file;
     }
 
-    spdk_file_close(file, g_channel);*/
+    blobfs2_close(file, g_channel);*/
 
     rc = spdk_fs_open_file(g_fs, g_channel, parent, 0, &file);
     if (rc) {
@@ -556,7 +556,7 @@ static int __hookfs_deletefile(const char * blobfspath) {
     rc = 0;
 
 close_file:
-    spdk_file_close(file, g_channel);
+    blobfs2_close(file, g_channel);
 free_buf:
     free(buf);
 free_duppath:
@@ -623,7 +623,7 @@ static int __hookfs_isemptydir(const char * blobfspath) {
         rc = -1;
         goto close_file;
     }
-    spdk_file_close(file, g_channel);
+    blobfs2_close(file, g_channel);
 
     off = 0;
     while (off < stat.size) {
@@ -639,7 +639,7 @@ static int __hookfs_isemptydir(const char * blobfspath) {
     goto free_buf;
 
 close_file:
-    spdk_file_close(file, g_channel);
+    blobfs2_close(file, g_channel);
 free_buf:
     free(buf);
     return rc;
@@ -676,11 +676,11 @@ static int __hookfs_addfile(const char * blobfspath, const char *filename, unsig
 //    SPDK_ERRLOG("addfile: %s, %u, %lu, %lu in %s\n", filename, d_type, stat.size, strlen(buf) + 1, blobfspath);
     rc = blobfs2_write(file, g_channel, (void *)buf, stat.size, strlen(buf) + 1, false);
     if (rc != 0) {
-        spdk_file_close(file, g_channel);
+        blobfs2_close(file, g_channel);
         return -rc;
     }
 
-    rc = spdk_file_close(file, g_channel);
+    rc = blobfs2_close(file, g_channel);
     if (rc != 0) {
         return -rc;
     }
@@ -758,7 +758,7 @@ static int __hookfs_open(const char * blobfspath, int oflag, int mflag)
     return fd;
 
 spdk_close:
-    spdk_file_close(file, g_channel);
+    blobfs2_close(file, g_channel);
 realfs_close:
     realfs.close(fd);
 
@@ -843,7 +843,7 @@ static int hookfs_release(hookfs_fd_t * fd) {
     fd->fd = -1;
     pthread_rwlock_unlock(&fd->lock);
 
-    rc = spdk_file_close(file, g_channel);
+    rc = blobfs2_close(file, g_channel);
 //    SPDK_ERRLOG("close: %p, fd = %d, %d\n", fds[fd].file, fd, rc);
     if (rc == 0) {
         realfs.close(realfd);
@@ -1694,7 +1694,7 @@ static int hookfs_truncate(const char * abspath, off_t length) {
         return -1;
     }
     rc = spdk_file_truncate(file, g_channel, length);
-    spdk_file_close(file, g_channel);
+    blobfs2_close(file, g_channel);
     if (rc != 0) {
         errno = -rc;
         return -1;
