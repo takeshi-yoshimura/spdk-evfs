@@ -196,6 +196,7 @@ struct spdk_fs_cb_args {
 };
 
 static void cache_free_buffers(struct spdk_file *file);
+static void init_blobfs2();
 
 void
 spdk_fs_opts_init(struct spdk_blobfs_opts *opts)
@@ -219,6 +220,7 @@ __initialize_cache(void)
 		assert(false);
 	}
 	TAILQ_INIT(&g_caches);
+	init_blobfs2();
 	pthread_spin_init(&g_caches_lock, 0);
 }
 
@@ -2652,6 +2654,10 @@ cache_free_buffers(struct spdk_file *file)
 static TAILQ_HEAD(, cache_buffer) g_zeroref_caches;
 static uint64_t g_dmasize = 0;
 
+static void init_blobfs2() {
+	TAILQ_INIT(&g_zeroref_caches);
+}
+
 static void blobfs2_free_buffer(struct cache_buffer * buf) {
     if (buf != NULL) {
         spdk_dma_free(buf->buf);
@@ -2829,9 +2835,7 @@ static void __blobfs2_write_copy_buffer(void * _args, int bserrno)
     }
 
     if (args->op.rw.cachemiss) {
-        pthread_spin_lock(&file->lock);
         blobfs2_insert_buffer(file, buffer, offset - offset % buffer->buf_size);
-        pthread_spin_unlock(&file->lock);
     }
 
     if (g_fs_sync) {
@@ -3059,7 +3063,7 @@ int64_t blobfs2_read(struct spdk_file *file, struct spdk_io_channel * _channel, 
     __get_page_parameters(file, buffer->offset, CACHE_BUFFER_SIZE, &start_lba, &lba_size, &num_lba);
 
     // fill the buffer. this is a blocking operation
-    spdk_blob_io_read(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel, buffer, start_lba, num_lba, __wake_caller, &req->args);
+    spdk_blob_io_read(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel, buffer->buf, start_lba, num_lba, __wake_caller, &req->args);
     sem_wait(&channel->sem);
     rc = req->args.rc;
     free_fs_request(req);
@@ -3072,9 +3076,7 @@ int64_t blobfs2_read(struct spdk_file *file, struct spdk_io_channel * _channel, 
     copylen = (offset + length < buffer->offset + CACHE_BUFFER_SIZE ? length: CACHE_BUFFER_SIZE) - (offset - buffer->offset);
     memcpy(payload, buffer->buf + offset - buffer->offset, copylen);
 
-    pthread_spin_lock(&file->lock);
     blobfs2_insert_buffer(file, buffer, offset - offset % CACHE_BUFFER_SIZE);
-    pthread_spin_unlock(&file->lock);
     blobfs2_put_buffer(buffer);
 
     return copylen;
