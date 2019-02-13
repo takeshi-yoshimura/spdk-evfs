@@ -2870,7 +2870,7 @@ static void __blobfs2_write_cachemiss(void * _args)
         uint32_t lba_size;
 		uint64_t align = spdk_bs_get_io_unit_size(file->fs->bs);
 		// we need to alloc temporal buffer to issue DMA
-		void * dma = spdk_dma_malloc((length + align - 1) / align, align, NULL);
+		void * dma = spdk_dma_malloc(length, align, NULL);
 		if (!dma) {
 			SPDK_ERRLOG("failed to alloc buffer\n");
 			__blobfs2_write_last(NULL, req);
@@ -2974,12 +2974,13 @@ int64_t blobfs2_write(struct spdk_file *file, struct spdk_io_channel * _channel,
 {
     struct spdk_fs_channel * channel;
     struct spdk_fs_request * req;
+	uint64_t align = spdk_bs_get_io_unit_size(file->fs->bs);
 
     if (length == 0) {
         return 0;
     }
 
-    if (direct && ((uint64_t)payload % CACHE_BUFFER_SIZE != 0 || offset % CACHE_BUFFER_SIZE != 0 || length % CACHE_BUFFER_SIZE != 0)) {
+    if (direct && ((uint64_t)payload % align != 0 || offset % align != 0 || length % align != 0)) {
         return -EINVAL;
     }
 
@@ -3012,13 +3013,14 @@ int64_t blobfs2_read(struct spdk_file *file, struct spdk_io_channel * _channel, 
 	struct cache_buffer * buffer;
 	uint64_t copylen, start_lba, num_lba;
     uint32_t lba_size;
-    int rc;
+    int64_t rc;
+	uint64_t align = spdk_bs_get_io_unit_size(file->fs->bs);
 
 	if (length == 0) {
 		return 0;
 	}
 
-    if (direct && ((uint64_t)payload % CACHE_BUFFER_SIZE != 0 || offset % CACHE_BUFFER_SIZE != 0 || length % CACHE_BUFFER_SIZE != 0)) {
+    if (direct && ((uint64_t)payload % align != 0 || offset % align != 0 || length % align != 0)) {
         return -EINVAL;
     }
 
@@ -3052,9 +3054,8 @@ int64_t blobfs2_read(struct spdk_file *file, struct spdk_io_channel * _channel, 
     }
 
     if (direct) {
-    	uint64_t align = spdk_bs_get_io_unit_size(file->fs->bs);
     	// we need to alloc temporal buffer to issue DMA
-    	void * dma = spdk_dma_malloc((length + align - 1) / align, align, NULL);
+    	void * dma = spdk_dma_malloc(length, align, NULL);
     	if (!dma) {
     		return -ENOMEM;
     	}
@@ -3064,7 +3065,11 @@ int64_t blobfs2_read(struct spdk_file *file, struct spdk_io_channel * _channel, 
         // read on-disk data. this is a blocking operation
         spdk_blob_io_read(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel, dma, start_lba, num_lba, __wake_caller, &req->args);
         sem_wait(&channel->sem);
-        rc = req->args.rc;
+        if (req->args.rc == 0) {
+        	rc = length;
+        } else {
+			rc = req->args.rc;
+        }
         free_fs_request(req);
         memcpy(payload, dma, length);
         spdk_dma_free(dma);
