@@ -2784,9 +2784,9 @@ static void __blobfs2_write_last(struct cache_buffer * buffer, struct spdk_fs_re
     }
     if (!need_sync) {
 		struct spdk_file * file = req->args.file;
-		spdk_spin_lock(&file->syncreq_lock);
+		pthread_spin_lock(&file->syncreq_lock);
 		TAILQ_REMOVE(&file->sync_requests, req, args.op.sync.tailq);
-		spdk_spin_unlock(&file->syncreq_lock);
+		pthread_spin_unlock(&file->syncreq_lock);
     }
 	blobfs2_free_fs_request(req);
     if (req->args.sem) {
@@ -2798,7 +2798,6 @@ static void __blobfs2_buffer_flush_done(void * _args, int bserrno)
 {
     struct spdk_fs_request * req = _args;
     struct spdk_fs_cb_args * args = &req->args;
-    struct spdk_file * file = req->args.file;
 	struct cache_buffer * buffer = args->op.flush.cache_buffer;
 
 	if (bserrno == 0) {
@@ -2898,7 +2897,6 @@ static void __blobfs2_write_direct_done(void * _args, int bserrno)
         SPDK_ERRLOG("write failure\n");
     }
     spdk_dma_free(req->args.op.rw.pin_buf);
-    __blobfs2_finish_sync((struct spdk_fs_request *)_args);
     __blobfs2_write_last(NULL, (struct spdk_fs_request *)_args, false);
 }
 
