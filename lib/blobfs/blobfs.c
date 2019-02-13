@@ -2788,6 +2788,7 @@ static void __blobfs2_write_last(struct cache_buffer * buffer, struct spdk_fs_re
 		TAILQ_REMOVE(&file->sync_requests, req, args.op.sync.tailq);
 		pthread_spin_unlock(&file->syncreq_lock);
     }
+	free(req->args.op.rw.user_buf);
 	blobfs2_free_fs_request(req);
     if (req->args.sem) {
     	sem_post(req->args.sem); // for sync
@@ -2911,7 +2912,6 @@ static void __blobfs2_write_cachemiss(void * _args)
     uint64_t buffer_offset;
 
     if (args->op.rw.direct) {
-        void * payload = args->op.rw.user_buf;
         uint64_t start_lba, num_lba;
         uint32_t lba_size;
 		uint64_t align = spdk_bs_get_io_unit_size(file->fs->bs);
@@ -2922,7 +2922,7 @@ static void __blobfs2_write_cachemiss(void * _args)
 			__blobfs2_write_last(NULL, req, false);
 			return;
 		}
-		memcpy(dma, payload, length);
+		memcpy(dma, args->op.rw.user_buf, length);
 		args->op.rw.pin_buf = dma;
 
         __get_page_parameters(file, offset, length, &start_lba, &lba_size, &num_lba);
@@ -3023,6 +3023,7 @@ int64_t blobfs2_write(struct spdk_file *file, struct spdk_io_channel * _channel,
     struct spdk_fs_channel * channel;
     struct spdk_fs_request * req;
 	uint64_t align = spdk_bs_get_io_unit_size(file->fs->bs);
+	void * user_buf;
 
     if (length == 0) {
         return 0;
@@ -3037,6 +3038,12 @@ int64_t blobfs2_write(struct spdk_file *file, struct spdk_io_channel * _channel,
         return -EINVAL;
     }
 
+    user_buf = malloc(length);
+    if (!user_buf) {
+    	return -ENOMEM;
+    }
+    memcpy(user_buf, payload, length);
+
     req = blobfs2_alloc_fs_request(channel);
     if (!req) {
         return -ENOMEM;
@@ -3046,7 +3053,7 @@ int64_t blobfs2_write(struct spdk_file *file, struct spdk_io_channel * _channel,
     req->args.file = file;
     req->args.op.rw.offset = offset;
     req->args.op.rw.length = length;
-    req->args.op.rw.user_buf = payload;
+    req->args.op.rw.user_buf = user_buf;
     req->args.op.rw.direct = direct;
 
 	// marker for fsync. TODO: making this logic lock-free
