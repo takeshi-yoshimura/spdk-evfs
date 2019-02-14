@@ -199,7 +199,6 @@ struct spdk_fs_cb_args {
             uint64_t		length;
             bool cachemiss;
             bool direct;
-		    bool completed;
             struct cache_buffer * buffer;
             TAILQ_ENTRY(spdk_fs_request)	tailq;
 		} blobfs2_rw;
@@ -3210,9 +3209,16 @@ static int __blobfs2_sync_nosyncfs(struct spdk_file * file, struct spdk_fs_chann
 
 	nr_sync = 0;
 	TAILQ_FOREACH(req, &sync_reqs, args.op.blobfs2_rw.tailq) {
-		req->args.sem = &channel->sem;
-		__blobfs2_flush_buffer(req);
-		++nr_sync;
+		pthread_spin_lock(&file->lock);
+		while (spdk_tree_find_buffer(file->tree, req->args.op.blobfs2_rw.offset) == NULL) {
+            pthread_spin_unlock(&file->lock);
+            usleep(1);
+            pthread_spin_lock(&file->lock);
+		}
+		pthread_spin_unlock(&file->lock);
+        req->args.sem = &channel->sem;
+        __blobfs2_flush_buffer(req);
+        ++nr_sync;
 	}
 	while (nr_sync-- > 0) {
 		sem_wait(&channel->sem);
