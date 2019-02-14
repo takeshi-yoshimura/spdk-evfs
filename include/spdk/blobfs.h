@@ -395,6 +395,8 @@ void spdk_file_set_priority(struct spdk_file *file, uint32_t priority);
  */
 int spdk_file_sync(struct spdk_file *file, struct spdk_io_channel *channel);
 
+void blobfs2_barrier(struct spdk_file *file);
+
 int blobfs2_sync(struct spdk_file *file, struct spdk_io_channel *channel);
 /**
  * Get the unique ID for the file.

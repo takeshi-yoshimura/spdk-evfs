@@ -3223,7 +3223,7 @@ int64_t blobfs2_read(struct spdk_file *file, struct spdk_io_channel * _channel, 
 void blobfs2_barrier(struct spdk_file * file) {
     // fbarrier: ensure all writes before sync finishes
     pthread_spin_lock(&file->writeorder_lock);
-    while (TAILQ_EMPTY(&file->sync_requests)) {
+    while (!TAILQ_EMPTY(&file->sync_requests)) {
         pthread_spin_unlock(&file->writeorder_lock);
         usleep(1);
         pthread_spin_lock(&file->writeorder_lock);
