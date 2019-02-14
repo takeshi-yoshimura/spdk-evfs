@@ -77,6 +77,7 @@ struct spdk_file {
 	uint64_t		length;
 	bool                    is_deleted;
 	bool			open_for_writing;
+	bool            resizing;
 	uint64_t		length_flushed;
 	uint64_t		append_pos;
 	uint64_t		seq_byte_count;
@@ -90,7 +91,7 @@ struct spdk_file {
 	struct cache_buffer	*last;
 	struct cache_tree	*tree;
 	TAILQ_HEAD(open_requests_head, spdk_fs_request) open_requests;
-	TAILQ_HEAD(sync_requests_head, spdk_fs_request) sync_requests;
+    TAILQ_HEAD(sync_requests_head, spdk_fs_request) sync_requests;
 	TAILQ_ENTRY(spdk_file)	cache_tailq;
 };
 
@@ -536,7 +537,7 @@ file_alloc(struct spdk_filesystem *fs)
 
 	file->fs = fs;
 	TAILQ_INIT(&file->open_requests);
-	TAILQ_INIT(&file->sync_requests);
+    TAILQ_INIT(&file->sync_requests);
 	pthread_spin_init(&file->lock, 0);
 	pthread_spin_init(&file->syncreq_lock, 0);
 	TAILQ_INSERT_TAIL(&fs->files, file, tailq);
@@ -639,6 +640,7 @@ iter_cb(void *ctx, struct spdk_blob *blob, int rc)
 		f->length = *length;
 		f->length_flushed = *length;
 		f->append_pos = *length;
+		f->resizing = false;
 		SPDK_DEBUGLOG(SPDK_LOG_BLOBFS, "added file %s length=%ju\n", f->name, f->length);
 	} else {
 		struct spdk_deleted_file *deleted_file;
@@ -2957,13 +2959,21 @@ static void __blobfs2_write_cachemiss(void * _args)
 
 static void __blobfs2_resize_done(void * _args, int bserrno) {
     struct spdk_fs_request * req = _args;
+    struct spdk_fs_cb_args * args = &req->args;
+    struct spdk_file * file = args->file;
+
+    pthread_spin_lock(&file->lock);
+    if (bserrno == 0) {
+        file->length = args->op.truncate.length;
+    }
+    file->resizing = false;
+    pthread_spin_unlock(&file->lock);
 
     if (bserrno) {
         SPDK_ERRLOG("failed to sync blob metadata\n");
         __blobfs2_write_last(NULL, req, false);
         return;
     }
-
     __blobfs2_write_cachemiss(req);
 }
 
@@ -2974,13 +2984,15 @@ static void __blobfs2_write_resize(void * _args, int bserrno) {
 
     if (bserrno) {
         SPDK_ERRLOG("failed to resize blob\n");
+        pthread_spin_lock(&file->lock);
+        file->resizing = false;
+        pthread_spin_unlock(&file->lock);
         __blobfs2_write_last(NULL, req, false);
         return;
     }
 
     args->op.truncate.length = args->op.rw.offset + args->op.rw.length;
     uint64_t * length = &args->op.truncate.length;
-    file->length = *length;
     spdk_blob_set_xattr(file->blob, "length", length, sizeof(*length));
     spdk_blob_sync_md(args->file->blob, __blobfs2_resize_done, req);
 }
@@ -3007,13 +3019,21 @@ static void __blobfs2_write(void * _args)
         return;
     }
 
+    pthread_spin_lock(&file->lock);
+    if (file->resizing) {
+        // racy resize exists. wait for its completion
+        pthread_spin_unlock(&file->lock);
+        req->channel->send_request(__blobfs2_write, req);
+        return;
+    }
+
     if (offset + length > file->length) {
-        // cache miss due to append write
-        // __blobfs2_write_resize eventually calls blobfs2_write_cachemiss after on-disk metadata is updated
         uint64_t sz = __bytes_to_clusters(offset + length, file->fs->bs_opts.cluster_sz);
+        file->resizing = true;
+        pthread_spin_unlock(&file->lock);
         spdk_blob_resize(file->blob, sz, __blobfs2_write_resize, req);
     } else {
-        // cache miss
+        pthread_spin_unlock(&file->lock);
         __blobfs2_write_cachemiss(req);
     }
 }
@@ -3177,7 +3197,7 @@ static int __blobfs2_sync_nosyncfs(struct spdk_file * file, struct spdk_fs_chann
 	TAILQ_INIT(&sync_reqs);
 
 	pthread_spin_lock(&file->syncreq_lock);
-	TAILQ_SWAP(&sync_reqs, &file->sync_requests, spdk_fs_request, args.op.sync.tailq);
+	TAILQ_SWAP(&file->sync_requests, &sync_reqs, spdk_fs_request, args.op.sync.tailq);
 	pthread_spin_unlock(&file->syncreq_lock);
 
 	nr_sync = 0;
@@ -3192,9 +3212,12 @@ static int __blobfs2_sync_nosyncfs(struct spdk_file * file, struct spdk_fs_chann
 
 	rc = 0;
 	TAILQ_FOREACH(req, &sync_reqs, args.op.sync.tailq) {
-		if (rc != 0 && req->args.rc != 0) {
+		if (rc == 0 && req->args.rc != 0) {
 			rc = req->args.rc;
 		}
+	}
+	if (rc != 0) {
+	    SPDK_ERRLOG("sync failed: %d\n", rc);
 	}
 	return rc;
 }
