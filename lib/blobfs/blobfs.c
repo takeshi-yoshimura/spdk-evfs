@@ -2767,9 +2767,8 @@ static void blobfs2_put_buffer(struct cache_buffer * buffer)
 		pthread_spin_lock(&g_caches_lock);
 		TAILQ_INSERT_TAIL(&g_zeroref_caches, buffer, zeroref_tailq);
 		pthread_spin_unlock(&g_caches_lock);
-    } else {
-        pthread_spin_unlock(&buffer->lock);
     }
+	pthread_spin_unlock(&buffer->lock);
 }
 
 static struct spdk_fs_request * blobfs2_alloc_fs_request(struct spdk_fs_channel * channel)
