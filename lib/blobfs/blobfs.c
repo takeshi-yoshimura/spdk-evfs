@@ -2723,6 +2723,7 @@ static struct cache_buffer * blobfs2_alloc_buffer(struct spdk_blob_store * bs)
 
 static void blobfs2_insert_buffer(struct spdk_file *file, struct cache_buffer * buf, uint64_t offset)
 {
+	buf->offset = offset;
 	pthread_spin_lock(&g_caches_lock);
 	if (file->tree->present_mask == 0) {
 		TAILQ_INSERT_TAIL(&g_caches, file, cache_tailq);
@@ -2757,6 +2758,8 @@ static void blobfs2_put_buffer(struct cache_buffer * buffer)
 		pthread_spin_lock(&g_caches_lock);
     	TAILQ_INSERT_TAIL(&g_zeroref_caches, buffer, cache_tailq);
 		pthread_spin_unlock(&g_caches_lock);
+    } else {
+        pthread_spin_unlock(&buffer->lock);
     }
 }
 
@@ -2792,16 +2795,19 @@ static void __blobfs2_write_last(struct cache_buffer * buffer, struct spdk_fs_re
     if (buffer) {
         blobfs2_put_buffer(buffer);
     }
+
+    free(req->args.op.blobfs2_rw.user_buf);
+    req->args.op.blobfs2_rw.user_buf = NULL;
+
     if (!need_sync) {
-		struct spdk_file * file = req->args.file;
-		pthread_spin_lock(&file->syncreq_lock);
-		TAILQ_REMOVE(&file->sync_requests, req, args.op.blobfs2_rw.tailq);
-		pthread_spin_unlock(&file->syncreq_lock);
+        struct spdk_file * file = req->args.file;
+        pthread_spin_lock(&file->syncreq_lock);
+        TAILQ_REMOVE(&file->sync_requests, req, args.op.blobfs2_rw.tailq);
+        pthread_spin_unlock(&file->syncreq_lock);
+        blobfs2_free_fs_request(req); // release req at sync's callback
     }
-	free(req->args.op.blobfs2_rw.user_buf);
-	blobfs2_free_fs_request(req);
     if (req->args.sem) {
-    	sem_post(req->args.sem); // for sync
+        sem_post(req->args.sem); // for sync
     }
 }
 
@@ -2949,6 +2955,7 @@ static void __blobfs2_write_cachemiss(void * _args)
         return;
     }
 	buffer_offset = offset - offset % CACHE_BUFFER_SIZE;
+    args->op.blobfs2_rw.cachemiss = true;
 
     if ((offset % CACHE_BUFFER_SIZE == 0 && length % CACHE_BUFFER_SIZE == 0) || offset + length >= file->length) {
         // aligned write. we don't need fetch before write. copy and return immediately.
@@ -2959,7 +2966,6 @@ static void __blobfs2_write_cachemiss(void * _args)
         uint64_t start_lba, num_lba;
         uint32_t lba_size;
         __get_page_parameters(file, buffer_offset, CACHE_BUFFER_SIZE, &start_lba, &lba_size, &num_lba);
-        args->op.blobfs2_rw.cachemiss = true;
         spdk_blob_io_read(args->file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
         		buffer->buf, start_lba, num_lba, __blobfs2_write_copy_buffer, req);
     }
