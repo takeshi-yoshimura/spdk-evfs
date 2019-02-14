@@ -548,7 +548,8 @@ file_alloc(struct spdk_filesystem *fs)
 
 	file->fs = fs;
 	TAILQ_INIT(&file->open_requests);
-    TAILQ_INIT(&file->sync_requests);
+	TAILQ_INIT(&file->sync_requests);
+	TAILQ_INIT(&file->dirty_buffers);
 	pthread_spin_init(&file->lock, 0);
     pthread_spin_init(&file->writeorder_lock, 0);
     pthread_spin_init(&file->buffer_lock, 0);
@@ -3245,7 +3246,7 @@ int blobfs2_sync(struct spdk_file * file, struct spdk_io_channel * _channel)
     TAILQ_INIT(&dirty_buffers);
     pthread_spin_lock(&file->buffer_lock);
     TAILQ_SWAP(&file->dirty_buffers, &dirty_buffers, cache_buffer, dirty_tailq);
-    pthread_spin_lock(&file->buffer_lock);
+    pthread_spin_unlock(&file->buffer_lock);
 
 	rc = 0;
     nr_sync = 0;
