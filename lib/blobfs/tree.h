@@ -51,6 +51,7 @@ struct cache_buffer {
 	pthread_spinlock_t lock;
 	TAILQ_ENTRY(cache_buffer)	cache_tailq;
 	TAILQ_ENTRY(cache_buffer)   dirty_tailq;
+	TAILQ_ENTRY(cache_buffer)   zeroref_tailq;
 };
 
 extern uint32_t g_fs_cache_buffer_shift;

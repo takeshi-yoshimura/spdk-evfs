@@ -2706,7 +2706,7 @@ static struct cache_buffer * blobfs2_alloc_buffer(struct spdk_blob_store * bs)
 			SPDK_DEBUGLOG(SPDK_LOG_BLOBFS, "alloc_buffer failed\n");
 			return NULL;
 		}
-		TAILQ_REMOVE(&g_zeroref_caches, buf, cache_tailq);
+		TAILQ_REMOVE(&g_zeroref_caches, buf, zeroref_tailq);
 		pthread_spin_unlock(&g_caches_lock);
 	} else {
 		buf = calloc(1, sizeof(*buf));
@@ -2747,11 +2747,16 @@ static struct cache_buffer * blobfs2_get_buffer(struct spdk_file * file, uint64_
     buffer = spdk_tree_find_buffer(file->tree, offset);
 	pthread_spin_unlock(&file->buffer_lock);
 
-    if (buffer && buffer->ref++ == 0) {
+	if (!buffer) {
+		return NULL;
+	}
+	pthread_spin_lock(&buffer->lock);
+    if (buffer->ref++ == 0) {
 		pthread_spin_lock(&g_caches_lock);
-		TAILQ_REMOVE(&g_zeroref_caches, buffer, cache_tailq);
+		TAILQ_REMOVE(&g_zeroref_caches, buffer, zeroref_tailq);
 		pthread_spin_unlock(&g_caches_lock);
     }
+	pthread_spin_unlock(&buffer->lock);
     return buffer;
 }
 
@@ -2759,9 +2764,8 @@ static void blobfs2_put_buffer(struct cache_buffer * buffer)
 {
 	pthread_spin_lock(&buffer->lock);
     if (--buffer->ref == 0 && !buffer->in_progress && !buffer->dirty) {
-    	pthread_spin_unlock(&buffer->lock);
 		pthread_spin_lock(&g_caches_lock);
-    	TAILQ_INSERT_TAIL(&g_zeroref_caches, buffer, cache_tailq);
+		TAILQ_INSERT_TAIL(&g_zeroref_caches, buffer, zeroref_tailq);
 		pthread_spin_unlock(&g_caches_lock);
     } else {
         pthread_spin_unlock(&buffer->lock);
@@ -2851,7 +2855,7 @@ static void __blobfs2_flush_buffer(void * _args)
 	uint32_t lba_size;
 	uint64_t buffer_offset = offset - offset % CACHE_BUFFER_SIZE;
 
-	if (buffer) {
+	if (!buffer) {
 		__blobfs2_write_last(buffer, req);
 	    return;
 	}
@@ -3271,6 +3275,7 @@ int blobfs2_sync(struct spdk_file * file, struct spdk_io_channel * _channel)
         req->args.op.blobfs2_rw.length = CACHE_BUFFER_SIZE;
         req->args.op.blobfs2_rw.direct = false;
         req->args.op.blobfs2_rw.needrc = true;
+        req->args.file = file;
 		req->args.sem = &channel->sem;
         __blobfs2_flush_buffer(req);
         ++nr_sync;
