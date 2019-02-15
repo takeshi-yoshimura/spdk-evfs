@@ -2733,11 +2733,11 @@ static void blobfs2_insert_buffer(struct spdk_file *file, struct cache_buffer * 
 	if (file->tree->present_mask == 0) {
 		TAILQ_INSERT_TAIL(&g_caches, file, cache_tailq);
 	}
+    file->tree = spdk_tree_insert_buffer(file->tree, buf);
     pthread_spin_unlock(&g_caches_lock);
 
-	pthread_spin_lock(&file->buffer_lock);
-	file->tree = spdk_tree_insert_buffer(file->tree, buf);
-    pthread_spin_unlock(&file->buffer_lock);
+//	pthread_spin_lock(&file->buffer_lock);
+//  pthread_spin_unlock(&file->buffer_lock);
 }
 
 static void blobfs2_buffer_up(struct cache_buffer * buffer)
@@ -2745,7 +2745,9 @@ static void blobfs2_buffer_up(struct cache_buffer * buffer)
     pthread_spin_lock(&buffer->lock);
     if (buffer->ref++ == 0) {
         pthread_spin_lock(&g_caches_lock);
-        TAILQ_REMOVE(&g_zeroref_caches, buffer, zeroref_tailq);
+        if (TAILQ_NEXT(buffer, zeroref_tailq)) {
+            TAILQ_REMOVE(&g_zeroref_caches, buffer, zeroref_tailq);
+        }
         pthread_spin_unlock(&g_caches_lock);
     }
     pthread_spin_unlock(&buffer->lock);
@@ -2755,9 +2757,9 @@ static struct cache_buffer * blobfs2_get_buffer(struct spdk_file * file, uint64_
 {
     struct cache_buffer * buffer;
 
-    pthread_spin_lock(&file->buffer_lock);
+//    pthread_spin_lock(&file->buffer_lock);
     buffer = spdk_tree_find_buffer(file->tree, offset);
-	pthread_spin_unlock(&file->buffer_lock);
+//    pthread_spin_unlock(&file->buffer_lock);
 
 	if (buffer) {
         blobfs2_buffer_up(buffer);
@@ -2982,11 +2984,11 @@ static void __blobfs2_write_cachemiss(void * _args)
         return;
     }
 	buffer_offset = offset - offset % CACHE_BUFFER_SIZE;
+    args->op.blobfs2_rw.buffer = buffer;
     args->op.blobfs2_rw.cachemiss = true;
 
     if ((offset % CACHE_BUFFER_SIZE == 0 && length % CACHE_BUFFER_SIZE == 0) || offset + length >= file->length) {
         // aligned write. we don't need fetch before write. copy and return immediately.
-        args->op.blobfs2_rw.buffer = buffer;
         __blobfs2_write_copy_buffer(req, 0);
     } else {
         // fetch on-disk data
@@ -3252,9 +3254,11 @@ int blobfs2_sync(struct spdk_file * file, struct spdk_io_channel * _channel)
 
 	TAILQ_INIT(&requests);
     TAILQ_INIT(&dirty_buffers);
-    pthread_spin_lock(&file->buffer_lock);
+//    pthread_spin_lock(&file->buffer_lock);
+    pthread_spin_lock(&g_zeroref_caches);
     TAILQ_SWAP(&file->dirty_buffers, &dirty_buffers, cache_buffer, dirty_tailq);
-    pthread_spin_unlock(&file->buffer_lock);
+    pthread_spin_unlock(&g_zeroref_caches);
+//    pthread_spin_unlock(&file->buffer_lock);
 
 	rc = 0;
     nr_sync = 0;
