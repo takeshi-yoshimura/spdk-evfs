@@ -2740,23 +2740,28 @@ static void blobfs2_insert_buffer(struct spdk_file *file, struct cache_buffer * 
     pthread_spin_unlock(&file->buffer_lock);
 }
 
+static void blobfs2_buffer_up(struct cache_buffer * buffer)
+{
+    pthread_spin_lock(&buffer->lock);
+    if (buffer->ref++ == 0) {
+        pthread_spin_lock(&g_caches_lock);
+        TAILQ_REMOVE(&g_zeroref_caches, buffer, zeroref_tailq);
+        pthread_spin_unlock(&g_caches_lock);
+    }
+    pthread_spin_unlock(&buffer->lock);
+}
+
 static struct cache_buffer * blobfs2_get_buffer(struct spdk_file * file, uint64_t offset)
 {
     struct cache_buffer * buffer;
+
     pthread_spin_lock(&file->buffer_lock);
     buffer = spdk_tree_find_buffer(file->tree, offset);
 	pthread_spin_unlock(&file->buffer_lock);
 
-	if (!buffer) {
-		return NULL;
+	if (buffer) {
+        blobfs2_buffer_up(buffer);
 	}
-	pthread_spin_lock(&buffer->lock);
-    if (buffer->ref++ == 0) {
-		pthread_spin_lock(&g_caches_lock);
-		TAILQ_REMOVE(&g_zeroref_caches, buffer, zeroref_tailq);
-		pthread_spin_unlock(&g_caches_lock);
-    }
-	pthread_spin_unlock(&buffer->lock);
     return buffer;
 }
 
@@ -3256,6 +3261,7 @@ int blobfs2_sync(struct spdk_file * file, struct spdk_io_channel * _channel)
     while (!TAILQ_EMPTY(&dirty_buffers)) {
     	struct cache_buffer * buffer = TAILQ_FIRST(&dirty_buffers);
     	TAILQ_REMOVE(&dirty_buffers, buffer, dirty_tailq);
+    	blobfs2_buffer_up(buffer);
 
     	req = blobfs2_alloc_fs_request(channel);
     	if (!req) {
