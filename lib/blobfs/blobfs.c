@@ -142,7 +142,6 @@ struct spdk_fs_cb_args {
 	struct spdk_filesystem *fs;
 	struct spdk_file *file;
 	int rc;
-	int64_t rc64;
 	bool from_request;
 	union {
 		struct {
@@ -2740,9 +2739,7 @@ static void blobfs2_insert_buffer(struct spdk_file *file, struct cache_buffer * 
 		TAILQ_INSERT_TAIL(&g_caches, file, cache_tailq);
 	}
 
-	if (!spdk_tree_find_buffer(file->tree, offset)) {
-        file->tree = spdk_tree_insert_buffer(file->tree, buf);
-    }
+    file->tree = spdk_tree_insert_buffer(file->tree, buf);
 }
 
 static void blobfs2_buffer_up(struct cache_buffer * buffer)
@@ -2812,11 +2809,6 @@ static void __blobfs2_rw_last(struct cache_buffer *buffer, struct spdk_fs_reques
 		args->op.blobfs2_rw.user_buf = NULL;
     }
 
-    buffer->in_progress = false;
-    if (buffer) {
-        blobfs2_put_buffer(buffer);
-    }
-
 	// for write barrier/sync
 	TAILQ_REMOVE(&file->sync_requests, req, args.op.blobfs2_rw.sync_tailq);
 	head = TAILQ_FIRST(&file->sync_requests);
@@ -2824,11 +2816,15 @@ static void __blobfs2_rw_last(struct cache_buffer *buffer, struct spdk_fs_reques
 		head->args.fn.file_op(req, rc);
     }
 
-	// resubmit delayed reads/writes
-	TAILQ_FOREACH(dreq, &buffer->write_waiter, args.op.blobfs2_rw.write_tailq) {
-		dreq->args.op.blobfs2_rw.delayed = true;
-		req->channel->send_request(__blobfs2_rw_cb, dreq);
-	}
+    if (buffer) {
+        buffer->in_progress = false;
+        blobfs2_put_buffer(buffer);
+        // resubmit delayed reads/writes
+        TAILQ_FOREACH(dreq, &buffer->write_waiter, args.op.blobfs2_rw.write_tailq) {
+            dreq->args.op.blobfs2_rw.delayed = true;
+            req->channel->send_request(__blobfs2_rw_cb, dreq);
+        }
+    }
 
     if (args->sem) {
 		args->rc = rc;
@@ -3175,6 +3171,7 @@ static void __blobfs2_sync_done(void * _args, int bserrno)
 	struct spdk_fs_request * req = _args;
 	req->args.rc = bserrno;
 	sem_post(req->args.sem);
+	blobfs2_free_fs_request(req);
 }
 
 static void __blobfs2_sync_cb(void * _args, int bserrno)
@@ -3187,6 +3184,7 @@ static void __blobfs2_sync_cb(void * _args, int bserrno)
 	if (TAILQ_EMPTY(&file->dirty_buffers)) {
 		args->rc = 0;
 		sem_post(args->sem);
+        blobfs2_free_fs_request(req);
 		return;
 	}
 
@@ -3196,6 +3194,7 @@ static void __blobfs2_sync_cb(void * _args, int bserrno)
 		if (!subreq) {
 			args->rc = -ENOMEM;
 			sem_post(args->sem);
+            blobfs2_free_fs_request(req);
 			return;
 		}
 
@@ -3264,7 +3263,7 @@ int blobfs2_barrier(struct spdk_file * file, struct spdk_io_channel * _channel) 
 	return req->args.rc;
 }
 
-static void __blobfs2_close_done(void * _args, int bserrno)
+/*static void __blobfs2_close_done(void * _args, int bserrno)
 {
 	struct spdk_fs_request * req = _args;
 	struct spdk_fs_cb_args * args = &req->args;
@@ -3277,7 +3276,7 @@ static void __blobfs2_close_done(void * _args, int bserrno)
 
 	args->rc = bserrno;
 	sem_post(args->sem);
-}
+}*/
 
 int blobfs2_close(struct spdk_file * file, struct spdk_io_channel * _channel)
 {
@@ -3296,7 +3295,7 @@ int blobfs2_close(struct spdk_file * file, struct spdk_io_channel * _channel)
 	BLOBFS_TRACE(file, "name=%s\n", file->name);
 	args->file = file;
 	args->sem = &channel->sem;
-	args->fn.file_op = __blobfs2_close_done;
+	args->fn.file_op = __wake_caller;
 	args->arg = req;
 	channel->send_request(__file_close, req);
 	sem_wait(&channel->sem);
