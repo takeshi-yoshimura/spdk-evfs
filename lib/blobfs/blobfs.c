@@ -3156,7 +3156,7 @@ int64_t blobfs2_rw(struct spdk_file *file, struct spdk_io_channel * _channel, vo
 		return req->args.rc64;
 	}
 
-	return length;
+	return is_read ? length: 0; // terrible. original blobfs does this
 }
 
 int64_t blobfs2_write(struct spdk_file *file, struct spdk_io_channel * _channel, void * payload, uint64_t offset, uint64_t length, int oflag)
