@@ -3103,7 +3103,7 @@ static void __blobfs2_rw_cb(void * _args)
 	}
 }
 
-int64_t blobfs2_rw(struct spdk_file *file, struct spdk_io_channel * _channel, void * payload, uint64_t offset, uint64_t length, int oflag, bool is_read)
+static int64_t blobfs2_rw(struct spdk_file *file, struct spdk_io_channel * _channel, void * payload, uint64_t offset, uint64_t length, int oflag, bool is_read)
 {
 	struct spdk_fs_channel * channel;
 	struct spdk_fs_request * req;
@@ -3263,7 +3263,7 @@ int blobfs2_barrier(struct spdk_file * file, struct spdk_io_channel * _channel) 
 	return req->args.rc;
 }
 
-void __blobfs2_close_done(void * _args, int bserrno)
+static void __blobfs2_close_done(void * _args, int bserrno)
 {
 	struct spdk_fs_request * req = _args;
 	struct spdk_fs_cb_args * args = &req->args;
