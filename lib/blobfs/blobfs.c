@@ -2714,14 +2714,12 @@ static struct cache_buffer * blobfs2_alloc_buffer(struct spdk_blob_store * bs)
 	if (!dma) {
 		buf = TAILQ_FIRST(&g_zeroref_caches);
 		if (!buf) {
-			SPDK_DEBUGLOG(SPDK_LOG_BLOBFS, "alloc_buffer failed\n");
 			return NULL;
 		}
 		TAILQ_REMOVE(&g_zeroref_caches, buf, zeroref_tailq);
 	} else {
 		buf = calloc(1, sizeof(*buf));
 		if (!buf) {
-			SPDK_DEBUGLOG(SPDK_LOG_BLOBFS, "calloc failed\n");
 			spdk_dma_free(dma);
 			return NULL;
 		}
@@ -2814,10 +2812,10 @@ static void __blobfs2_rw_last(struct cache_buffer *buffer, struct spdk_fs_reques
 		args->op.blobfs2_rw.user_buf = NULL;
     }
 
+    buffer->in_progress = false;
     if (buffer) {
         blobfs2_put_buffer(buffer);
     }
-	buffer->in_progress = false;
 
 	// for write barrier/sync
 	TAILQ_REMOVE(&file->sync_requests, req, args.op.blobfs2_rw.sync_tailq);
@@ -3074,7 +3072,6 @@ static void __blobfs2_rw_cb(void * _args)
     buffer = blobfs2_get_buffer(file, buffer_offset);
     if (buffer) {
         if (args->op.blobfs2_rw.oflag & O_DIRECT) {
-            SPDK_ERRLOG("attempted direct I/O on cached file\n");
 			__blobfs2_rw_last(buffer, req, -EIO);
             return;
         }
@@ -3088,10 +3085,14 @@ static void __blobfs2_rw_cb(void * _args)
         __blobfs2_rw_copy_buffer(req, 0);
         return;
     }
-
     buffer = blobfs2_alloc_buffer(file->fs->bs);
+    if (!buffer) {
+        __blobfs2_rw_last(buffer, req, -ENOMEM);
+        return;
+    }
     buffer->in_progress = true;
     blobfs2_insert_buffer(file, buffer, buffer_offset);
+    args->op.blobfs2_rw.buffer = buffer;
 
 	if (!args->op.blobfs2_rw.is_read && offset + length > file->length) {
 		uint64_t sz = __bytes_to_clusters(offset + length, file->fs->bs_opts.cluster_sz);
@@ -3153,7 +3154,7 @@ static int64_t blobfs2_rw(struct spdk_file *file, struct spdk_io_channel * _chan
 	channel->send_request(__blobfs2_rw_cb, req);
 	if (waitrc) {
 		sem_wait(&channel->sem);
-		return req->args.rc64;
+		return length;
 	}
 
 	return is_read ? length: 0; // terrible. original blobfs does this
