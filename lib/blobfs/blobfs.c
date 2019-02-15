@@ -2897,7 +2897,7 @@ static void __blobfs2_rw_copy_buffer(void * _args, int bserrno)
 		buffer->dirty = true;
 		TAILQ_INSERT_TAIL(&file->dirty_buffers, buffer, dirty_tailq);
 		if (args->op.blobfs2_rw.oflag & (O_SYNC | O_DSYNC)) {
-			args->rc64 = copylen;
+			args->rc = 0;
 			__blobfs2_flush_buffer(req);
 			return;
 		}
