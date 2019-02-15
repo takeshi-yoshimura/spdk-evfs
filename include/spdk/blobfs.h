@@ -209,6 +209,9 @@ void spdk_fs_free_io_channel(struct spdk_io_channel *channel);
 int spdk_fs_file_stat(struct spdk_filesystem *fs, struct spdk_io_channel *channel,
 		      const char *name, struct spdk_file_stat *stat);
 
+int blobfs2_stat(struct spdk_filesystem *fs, struct spdk_io_channel *channel,
+              const char *name, struct spdk_file_stat *stat);
+
 #define SPDK_BLOBFS_OPEN_CREATE	(1ULL << 0)
 
 /**
@@ -341,7 +344,7 @@ int spdk_file_write(struct spdk_file *file, struct spdk_io_channel *channel,
 		    void *payload, uint64_t offset, uint64_t length);
 
 int64_t blobfs2_write(struct spdk_file *file, struct spdk_io_channel *channel,
-            void *payload, uint64_t offset, uint64_t length, bool direct);
+            void *payload, uint64_t offset, uint64_t length, int oflag);
 
 /**
  * Read data to user buffer from the given file.
@@ -358,7 +361,7 @@ int64_t spdk_file_read(struct spdk_file *file, struct spdk_io_channel *channel,
 		       void *payload, uint64_t offset, uint64_t length);
 
 int64_t blobfs2_read(struct spdk_file *file, struct spdk_io_channel *channel,
-		       void *payload, uint64_t offset, uint64_t length, bool direct);
+		       void *payload, uint64_t offset, uint64_t length, int oflag);
 
 /**
  * Set cache size for the blobstore filesystem.
@@ -395,7 +398,7 @@ void spdk_file_set_priority(struct spdk_file *file, uint32_t priority);
  */
 int spdk_file_sync(struct spdk_file *file, struct spdk_io_channel *channel);
 
-void blobfs2_barrier(struct spdk_file *file);
+int blobfs2_barrier(struct spdk_file *file, struct spdk_io_channel *channel);
 
 int blobfs2_sync(struct spdk_file *file, struct spdk_io_channel *channel);
 /**

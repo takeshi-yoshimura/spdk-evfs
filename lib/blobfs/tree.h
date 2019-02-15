@@ -37,6 +37,8 @@
 #include "spdk/queue.h"
 #include <pthread.h>
 
+struct spdk_fs_request;
+
 struct cache_buffer {
 	uint8_t			*buf;
 	uint64_t		offset;
@@ -51,7 +53,8 @@ struct cache_buffer {
 	pthread_spinlock_t lock;
 	TAILQ_ENTRY(cache_buffer)	cache_tailq;
 	TAILQ_ENTRY(cache_buffer)   dirty_tailq;
-	TAILQ_ENTRY(cache_buffer)   zeroref_tailq;
+    TAILQ_ENTRY(cache_buffer)   zeroref_tailq;
+	TAILQ_HEAD(write_waiter_head, spdk_fs_request)   write_waiter;
 };
 
 extern uint32_t g_fs_cache_buffer_shift;
