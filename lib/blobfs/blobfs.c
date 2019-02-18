@@ -664,6 +664,7 @@ iter_cb(void *ctx, struct spdk_blob *blob, int rc)
 		f->blobid = spdk_blob_get_id(blob);
 		f->length = *length;
 		f->vlength = *length;
+		f->resizing = *length;
 		f->length_flushed = *length;
 		f->append_pos = *length;
 		SPDK_DEBUGLOG(SPDK_LOG_BLOBFS, "added file %s length=%ju\n", f->name, f->length);
@@ -2843,7 +2844,7 @@ static void __blobfs2_resize_cb(void *_args, int bserrno) {
     spdk_blob_sync_md(args->file->blob, __blobfs2_resize_done, req);
 }
 
-void __blobfs2_truncate_cb(void * _args)
+static void __blobfs2_truncate_cb(void * _args)
 {
 	struct spdk_fs_request * req = _args;
 	struct spdk_fs_cb_args * args = &req->args;
@@ -2979,12 +2980,22 @@ static void __blobfs2_flush_buffer(void * _args)
 	struct spdk_fs_request * req = _args;
 	struct spdk_fs_cb_args * args = &req->args;
 	struct spdk_file * file = args->file;
+	const uint64_t * plength;
+	size_t len;
 
+	spdk_blob_get_xattr_value(file->blob, "length", (const void **)&plength, &len);
+	if (len != sizeof(uint64_t)) {
+		__blobfs2_rw_last(NULL, req, -EIO);
+		return;
+	}
 	if (file->vlength > __file_get_blob_size(file)) {
 		uint64_t sz = __bytes_to_clusters(file->vlength, file->fs->bs_opts.cluster_sz);
 		args->fn.resize_op = __blobfs2_flush_buffer_resize_done;
 		file->resizing = file->vlength;
 		spdk_blob_resize(file->blob, sz, __blobfs2_resize_cb, req);
+	} else if (file->vlength > *plength) {
+		args->fn.resize_op = __blobfs2_flush_buffer_resize_done;
+		__blobfs2_resize_cb(_args, 0);
 	} else {
 		__blobfs2_flush_buffer_io(req);
 	}
@@ -3225,6 +3236,7 @@ static void __blobfs2_rw_cb(void * _args)
     }
 }
 
+// TODO: introduce spinlock for cache buffers to avoid sem_post/sem_wait on cache hit
 static int64_t blobfs2_rw(struct spdk_file *file, struct spdk_io_channel * _channel, void * payload, uint64_t offset, uint64_t length, int oflag, bool is_read)
 {
 	struct spdk_fs_channel * channel;
