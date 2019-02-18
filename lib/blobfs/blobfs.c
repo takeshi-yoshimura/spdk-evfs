@@ -137,6 +137,9 @@ struct spdk_fs_cb_args {
 		fs_request_fn rw_op;
 		spdk_file_op_complete resize_op;
 	} fn;
+	union {
+        spdk_file_op_complete			file_op;
+	} delayed_fn;
 	void *arg;
 	sem_t *sem;
 	struct spdk_filesystem *fs;
@@ -3172,8 +3175,8 @@ static void __blobfs2_sync_done(void * _args, int bserrno)
 	req->args.rc = bserrno;
     req->args.fn.file_op = NULL;
 	sem_post(req->args.sem);
-	blobfs2_free_fs_request(req);
     TAILQ_REMOVE(&req->args.file->sync_requests, req, args.op.blobfs2_rw.sync_tailq);
+	blobfs2_free_fs_request(req);
 }
 
 static void __blobfs2_sync_cb(void * _args, int bserrno)
@@ -3216,6 +3219,16 @@ static void __blobfs2_sync_cb(void * _args, int bserrno)
 	}
 }
 
+static void __blobfs2_delayed_barrier_cb(void * _args, int bserrno)
+{
+    struct spdk_fs_request * req = _args;
+    struct spdk_fs_cb_args * args = &req->args;
+    struct spdk_file * file = args->file;
+    TAILQ_REMOVE(&file->sync_requests, req, args.op.blobfs2_rw.sync_tailq);
+    args->delayed_fn.file_op = NULL;
+    args->fn.file_op(_args, 0);
+}
+
 static void __blobfs2_barrier_cb(void * _args)
 {
 	struct spdk_fs_request * req = _args;
@@ -3223,6 +3236,8 @@ static void __blobfs2_barrier_cb(void * _args)
 	struct spdk_file * file = args->file;
 
 	if (!TAILQ_EMPTY(&file->sync_requests)) {
+	    req->args.delayed_fn.file_op = req->args.fn.file_op;
+	    req->args.fn.file_op = __blobfs2_delayed_barrier_cb;
 		TAILQ_INSERT_TAIL(&file->sync_requests, req, args.op.blobfs2_rw.sync_tailq);
 	} else {
 		args->fn.file_op(_args, 0);
