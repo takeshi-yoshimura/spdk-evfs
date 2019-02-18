@@ -311,6 +311,9 @@ spdk_fs_iter spdk_fs_iter_next(spdk_fs_iter iter);
 int spdk_file_truncate(struct spdk_file *file, struct spdk_io_channel *channel,
 		       uint64_t length);
 
+int blobfs2_truncate(struct spdk_file *file, struct spdk_io_channel *channel,
+                       uint64_t length);
+
 /**
  * Get file name.
  *
