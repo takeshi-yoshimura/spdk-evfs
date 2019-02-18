@@ -3415,20 +3415,30 @@ int blobfs2_barrier(struct spdk_file * file, struct spdk_io_channel * _channel) 
 	return req->args.rc;
 }
 
-/*static void __blobfs2_close_done(void * _args, int bserrno)
+static void __blobfs2_close_done(void * _args, int bserrno)
 {
 	struct spdk_fs_request * req = _args;
 	struct spdk_fs_cb_args * args = &req->args;
 	struct spdk_file * file = args->file;
 	uint64_t off;
 
+	TAILQ_INIT(&file->dirty_buffers);
+	TAILQ_INIT(&file->resize_waiter);
 	for (off = 0; off < file->length; off += CACHE_BUFFER_SIZE) {
 		blobfs2_free_buffer(spdk_tree_find_buffer(file->tree, off));
+	}
+	if (file->tree->present_mask != 0) {
+		spdk_tree_free_buffers(file->tree);
+		TAILQ_REMOVE(&g_caches, file, cache_tailq);
+		if (file->tree->present_mask != 0) {
+			TAILQ_INSERT_TAIL(&g_caches, file, cache_tailq);
+		}
+		file->last = NULL;
 	}
 
 	args->rc = bserrno;
 	sem_post(args->sem);
-}*/
+}
 
 int blobfs2_close(struct spdk_file * file, struct spdk_io_channel * _channel)
 {
@@ -3447,7 +3457,7 @@ int blobfs2_close(struct spdk_file * file, struct spdk_io_channel * _channel)
 	BLOBFS_TRACE(file, "name=%s\n", file->name);
 	args->file = file;
 	args->sem = &channel->sem;
-	args->fn.file_op = __wake_caller;
+	args->fn.file_op = __blobfs2_close_done;
 	args->arg = req;
 	channel->send_request(__file_close, req);
 	sem_wait(&channel->sem);
