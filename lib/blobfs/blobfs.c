@@ -2994,6 +2994,7 @@ static void __blobfs2_flush_buffer(void * _args)
 		file->resizing = file->vlength;
 		spdk_blob_resize(file->blob, sz, __blobfs2_resize_cb, req);
 	} else if (file->vlength > *plength) {
+		file->resizing = file->vlength;
 		args->fn.resize_op = __blobfs2_flush_buffer_resize_done;
 		__blobfs2_resize_cb(_args, 0);
 	} else {
@@ -3100,7 +3101,7 @@ static void __blobfs2_rw_buffered(void * _args)
 		// fetch on-disk data
 		__get_page_parameters(file, buffer_offset, CACHE_BUFFER_SIZE, &start_lba, &lba_size, &num_lba);
 		spdk_blob_io_read(args->file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
-						  buffer->buf, start_lba, num_lba, __blobfs2_rw_copy_buffer, req);
+						  buffer->buf + (start_lba * lba_size) - offset, start_lba, num_lba, __blobfs2_rw_copy_buffer, req);
 	}
 }
 
@@ -3415,18 +3416,14 @@ int blobfs2_barrier(struct spdk_file * file, struct spdk_io_channel * _channel) 
 	return req->args.rc;
 }
 
-static void __blobfs2_close_done(void * _args, int bserrno)
+/*static void __blobfs2_close_done(void * _args, int bserrno)
 {
 	struct spdk_fs_request * req = _args;
 	struct spdk_fs_cb_args * args = &req->args;
 	struct spdk_file * file = args->file;
-	uint64_t off;
 
 	TAILQ_INIT(&file->dirty_buffers);
 	TAILQ_INIT(&file->resize_waiter);
-	for (off = 0; off < file->length; off += CACHE_BUFFER_SIZE) {
-		blobfs2_free_buffer(spdk_tree_find_buffer(file->tree, off));
-	}
 	if (file->tree->present_mask != 0) {
 		spdk_tree_free_buffers(file->tree);
 		TAILQ_REMOVE(&g_caches, file, cache_tailq);
@@ -3438,7 +3435,7 @@ static void __blobfs2_close_done(void * _args, int bserrno)
 
 	args->rc = bserrno;
 	sem_post(args->sem);
-}
+}*/
 
 int blobfs2_close(struct spdk_file * file, struct spdk_io_channel * _channel)
 {
@@ -3457,7 +3454,7 @@ int blobfs2_close(struct spdk_file * file, struct spdk_io_channel * _channel)
 	BLOBFS_TRACE(file, "name=%s\n", file->name);
 	args->file = file;
 	args->sem = &channel->sem;
-	args->fn.file_op = __blobfs2_close_done;
+	args->fn.file_op = __wake_caller;
 	args->arg = req;
 	channel->send_request(__file_close, req);
 	sem_wait(&channel->sem);
