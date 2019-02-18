@@ -2813,7 +2813,7 @@ static void __blobfs2_rw_last(struct cache_buffer *buffer, struct spdk_fs_reques
 	TAILQ_REMOVE(&file->sync_requests, req, args.op.blobfs2_rw.sync_tailq);
 	head = TAILQ_FIRST(&file->sync_requests);
     if (head && head->args.fn.file_op) {
-		head->args.fn.file_op(req, rc);
+		head->args.fn.file_op(head, rc);
     }
 
     if (buffer) {
@@ -3170,8 +3170,10 @@ static void __blobfs2_sync_done(void * _args, int bserrno)
 {
 	struct spdk_fs_request * req = _args;
 	req->args.rc = bserrno;
+    req->args.fn.file_op = NULL;
 	sem_post(req->args.sem);
 	blobfs2_free_fs_request(req);
+    TAILQ_REMOVE(&req->args.file->sync_requests, req, args.op.blobfs2_rw.sync_tailq);
 }
 
 static void __blobfs2_sync_cb(void * _args, int bserrno)
@@ -3200,6 +3202,7 @@ static void __blobfs2_sync_cb(void * _args, int bserrno)
 
 		blobfs2_buffer_up(buffer);
 		subreq->args.file = file;
+        subreq->args.op.blobfs2_rw.buffer = buffer;
 		subreq->args.op.blobfs2_rw.offset = buffer->offset;
 		subreq->args.op.blobfs2_rw.length = CACHE_BUFFER_SIZE;
 		subreq->args.fn.file_op = NULL;
