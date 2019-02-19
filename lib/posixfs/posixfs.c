@@ -437,7 +437,7 @@ static int __hookfs_deletefile(const char * blobfspath) {
         return -1;
     }
 
-    rc = spdk_fs_file_stat(g_fs, g_channel, blobfspath, &stat);
+    rc = blobfs2_stat(g_fs, g_channel, blobfspath, &stat);
     if (rc) {
         errno = -rc;
         return -1;
@@ -453,7 +453,7 @@ static int __hookfs_deletefile(const char * blobfspath) {
 
     parent = dirname(duppath);
     base = basename(duppath2);
-    rc = spdk_fs_file_stat(g_fs, g_channel, parent, &stat);
+    rc = blobfs2_stat(g_fs, g_channel, parent, &stat);
     if (rc) {
         errno = ENOTDIR;
         goto free_duppath;
@@ -579,7 +579,7 @@ static int __hookfs_isemptydir(const char * blobfspath) {
         return -1;
     }
 
-    rc = spdk_fs_file_stat(g_fs, g_channel, blobfspath, &stat);
+    rc = blobfs2_stat(g_fs, g_channel, blobfspath, &stat);
     if (rc) {
         errno = -rc;
         return -1;
@@ -591,7 +591,7 @@ static int __hookfs_isemptydir(const char * blobfspath) {
         return -1;
     }
 
-    rc = spdk_fs_file_stat(g_fs, g_channel, blobfspath, &stat);
+    rc = blobfs2_stat(g_fs, g_channel, blobfspath, &stat);
     if (rc) {
         errno = ENOTDIR;
         return -1;
@@ -657,7 +657,7 @@ static int __hookfs_addfile(const char * blobfspath, const char *filename, unsig
         return -1;
     }
 
-    rc = spdk_fs_file_stat(g_fs, g_channel, blobfspath, &stat);
+    rc = blobfs2_stat(g_fs, g_channel, blobfspath, &stat);
     if (rc == -ENOENT) {
         rc = spdk_fs_create_file(g_fs, g_channel, blobfspath);
         if (rc != 0) {
@@ -740,7 +740,7 @@ static int __hookfs_open(const char * blobfspath, int oflag, int mflag)
         goto realfs_close;
     }
     if (oflag & O_TRUNC) {
-        rc = spdk_file_truncate(file, g_channel, 0);
+        rc = blobfs2_truncate(file, g_channel, 0);
         if (rc != 0) {
             SPDK_ERRLOG("failed to truncate: %s, %d\n", blobfspath, rc);
             goto spdk_close;
@@ -1111,7 +1111,7 @@ static int __hookfs_stat(const char * blobfspath, struct stat * stbuf)
     struct spdk_file_stat stat;
     int rc;
 
-    rc = spdk_fs_file_stat(g_fs, g_channel, blobfspath, &stat);
+    rc = blobfs2_stat(g_fs, g_channel, blobfspath, &stat);
 //    SPDK_ERRLOG(">>>>> in stat:%s, %d <<<<<\n", blobfspath, rc);
     if (rc == 0) {
         stbuf->st_mode = (!hookfs_is_dir(blobfspath) ? S_IFREG : S_IFDIR) | 0644;
@@ -1198,7 +1198,7 @@ static int __hookfs_stat64(const char * blobfspath, struct stat64 * stbuf)
     struct spdk_file_stat stat;
     int rc;
 
-    rc = spdk_fs_file_stat(g_fs, g_channel, blobfspath, &stat);
+    rc = blobfs2_stat(g_fs, g_channel, blobfspath, &stat);
 //    SPDK_ERRLOG(">>>>> in stat:%s, %d <<<<<\n", blobfspath, rc);
     if (rc == 0) {
         stbuf->st_mode = (!hookfs_is_dir(blobfspath) ? S_IFREG : S_IFDIR) | 0644;
@@ -1295,7 +1295,7 @@ static int64_t hookfs_lseek(hookfs_fd_t * fd, uint64_t offset, int whence) {
         return -1;
     }
 
-    int rc = spdk_fs_file_stat(g_fs, g_channel, spdk_file_get_name(file), &stat);
+    int rc = blobfs2_stat(g_fs, g_channel, spdk_file_get_name(file), &stat);
     if (rc != 0) {
         errno = EBADF;
         return -1;
@@ -1492,7 +1492,7 @@ static DIR * __hookfs_opendir(const char * blobfspath)
         return NULL;
     }
 
-    rc = spdk_fs_file_stat(g_fs, g_channel, blobfspath, &stat);
+    rc = blobfs2_stat(g_fs, g_channel, blobfspath, &stat);
 //    SPDK_ERRLOG("opendir: %s, %d\n", blobfspath, rc);
     if (rc != 0) {
         errno = ENOENT;
@@ -1613,7 +1613,7 @@ static int hookfs_mkdir(const char * abspath, mode_t m) {
         }
     }
 
-    rc = spdk_fs_file_stat(g_fs, g_channel, blobfspath, &stat);
+    rc = blobfs2_stat(g_fs, g_channel, blobfspath, &stat);
     if (rc == -ENOENT) {
 //        SPDK_ERRLOG("mkdir: %s\n", blobfspath);
 
@@ -1693,7 +1693,7 @@ static int hookfs_truncate(const char * abspath, off_t length) {
         errno = -rc;
         return -1;
     }
-    rc = spdk_file_truncate(file, g_channel, length);
+    rc = blobfs2_truncate(file, g_channel, length);
     blobfs2_close(file, g_channel);
     if (rc != 0) {
         errno = -rc;
@@ -1714,7 +1714,7 @@ static int hookfs_ftruncate(hookfs_fd_t * fd, off_t length) {
         errno = EBADF;
         return -1;
     }
-    rc = spdk_file_truncate(file, g_channel, length);
+    rc = blobfs2_truncate(file, g_channel, length);
     if (rc != 0) {
         errno = -rc;
         return -1;

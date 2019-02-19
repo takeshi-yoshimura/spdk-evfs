@@ -212,6 +212,8 @@ int spdk_fs_file_stat(struct spdk_filesystem *fs, struct spdk_io_channel *channe
 int blobfs2_stat(struct spdk_filesystem *fs, struct spdk_io_channel *channel,
               const char *name, struct spdk_file_stat *stat);
 
+uint64_t blobfs2_fstat_unsafe(struct spdk_file * file);
+
 #define SPDK_BLOBFS_OPEN_CREATE	(1ULL << 0)
 
 /**
