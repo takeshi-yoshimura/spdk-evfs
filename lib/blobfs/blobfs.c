@@ -2833,7 +2833,8 @@ static void __blobfs2_stat(void *arg)
 		stat.blobid = f->blobid;
 		stat.size = f->length;
 		__blobfs2_copy_stat(req, &stat, 0);
-		return;
+	} else {
+		__blobfs2_copy_stat(req, &stat, -ENOENT);
 	}
 }
 
@@ -3103,6 +3104,7 @@ static void __blobfs2_rw_buffered(void * _args)
 	if (buffer) {
 		if (buffer->in_progress) {
 			// buffer is synchronizing to on-disk data. postpone this request after the write.
+			blobfs2_put_buffer(buffer);
 			req->args.delayed_fn.write_op = __blobfs2_rw_resubmit;
 			TAILQ_INSERT_TAIL(&buffer->write_waiter, req, args.op.blobfs2_rw.write_tailq);
 			return;
@@ -3356,7 +3358,6 @@ static void __blobfs2_sync_cb(void * _args, int bserrno)
 		if (!subreq) {
 			args->rc = -ENOMEM;
 			sem_post(args->sem);
-            blobfs2_free_fs_request(req);
 			return;
 		}
 
