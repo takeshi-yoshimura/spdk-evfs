@@ -2688,10 +2688,12 @@ cache_free_buffers(struct spdk_file *file)
 
 static TAILQ_HEAD(, cache_buffer) g_zeroref_caches;
 static uint64_t g_dmasize = 0;
+static uint64_t g_page_size;
 
 static void init_blobfs2(void) {
 	TAILQ_INIT(&g_zeroref_caches);
-	if (CACHE_BUFFER_SIZE < sysconf(_SC_PAGESIZE)) {
+	g_page_size = sysconf(_SC_PAGESIZE);
+	if (CACHE_BUFFER_SIZE < g_page_size) {
 		SPDK_WARNLOG("CacheBufferShift should be larger than page shift for this platform. This hurts Blobfs2 performance\n");
 	}
 }
@@ -2710,7 +2712,8 @@ static struct cache_buffer * blobfs2_alloc_buffer(struct spdk_blob_store * bs)
 	void * dma = NULL;
 
 	if (g_dmasize < g_fs_cache_size) {
-		dma = spdk_dma_malloc(CACHE_BUFFER_SIZE, spdk_bs_get_io_unit_size(bs), NULL);
+//		uint64_t align = spdk_bs_get_io_unit_size(bs);
+		dma = spdk_dma_malloc(CACHE_BUFFER_SIZE, g_page_size, NULL);
 		if (dma) {
 			g_dmasize += CACHE_BUFFER_SIZE;
 		}
@@ -3133,11 +3136,11 @@ static void __blobfs2_write_direct_blob(void * _args)
 	uint64_t length = args->op.blobfs2_rw.length;
 	uint64_t start_lba, num_lba;
 	uint32_t lba_size;
-	uint64_t align = spdk_bs_get_io_unit_size(file->fs->bs);
+//	uint64_t align = spdk_bs_get_io_unit_size(file->fs->bs);
 	void * dma;
 
 	// we need to alloc temporal buffer to issue DMA
-	dma = spdk_dma_malloc(length, align, NULL);
+	dma = spdk_dma_malloc(length, g_page_size, NULL);
 	if (!dma) {
 		SPDK_ERRLOG("failed to alloc buffer\n");
 		__blobfs2_rw_last(NULL, req, -ENOMEM);
@@ -3206,7 +3209,7 @@ static void __blobfs2_read_direct(void * _args)
 	struct spdk_file * file = args->file;
 	uint64_t offset = args->op.blobfs2_rw.offset;
 	uint64_t length = args->op.blobfs2_rw.length;
-	uint64_t align = spdk_bs_get_io_unit_size(file->fs->bs);
+//	uint64_t align = spdk_bs_get_io_unit_size(file->fs->bs);
 	void * dma;
 	uint64_t start_lba, num_lba;
 	uint32_t lba_size;
@@ -3221,7 +3224,7 @@ static void __blobfs2_read_direct(void * _args)
 	}
 
 	// we need to alloc temporal buffer to issue DMA
-	dma = spdk_dma_malloc(length, align, NULL);
+	dma = spdk_dma_malloc(length, g_page_size, NULL);
 	if (!dma) {
 		SPDK_ERRLOG("failed to alloc buffer\n");
 		__blobfs2_rw_last(NULL, req, -ENOMEM);
