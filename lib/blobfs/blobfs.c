@@ -3348,7 +3348,8 @@ static void __blobfs2_sync_cb(void * _args, int bserrno)
 
 	if (TAILQ_EMPTY(&file->dirty_buffers)) {
 		args->rc = 0;
-		sem_post(args->sem);
+		spdk_blob_set_xattr(file->blob, "length", &file->length, sizeof(file->length));
+		spdk_blob_sync_md(file->blob, __wake_caller, req);
 		return;
 	}
 
@@ -3357,7 +3358,8 @@ static void __blobfs2_sync_cb(void * _args, int bserrno)
 
 		if (!subreq) {
 			args->rc = -ENOMEM;
-			sem_post(args->sem);
+			spdk_blob_set_xattr(file->blob, "length", &file->length, sizeof(file->length));
+			spdk_blob_sync_md(file->blob, __wake_caller, req);
 			return;
 		}
 
