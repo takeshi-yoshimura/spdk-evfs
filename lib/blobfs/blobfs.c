@@ -2981,9 +2981,11 @@ static void __blobfs2_buffered_blob_resize_done(void * _args, int bserrno)
 
 static void __blobfs2_buffered_blob_resize_cb(void *_args, int bserrno) {
 	struct spdk_fs_request * req = _args;
+	struct spdk_file * file = req->args.file;
 	if (bserrno) {
 		__blobfs2_buffered_blob_resize_done(_args, bserrno);
 	} else {
+		spdk_blob_set_xattr(file->blob, "length", &file->resizing, sizeof(file->resizing));
 		spdk_blob_sync_md(req->args.file->blob, __blobfs2_buffered_blob_resize_done, req);
 	}
 }
@@ -3092,6 +3094,7 @@ static void __blobfs2_rw_buffered(void * _args)
 		return;
 	}
 	buffer->in_progress = true;
+	blobfs2_buffer_up(buffer);
 	blobfs2_insert_buffer(file, buffer, buffer_offset);
 	args->op.blobfs2_rw.buffer = buffer;
 
@@ -3168,9 +3171,11 @@ static void __blobfs2_direct_blob_resize_done(void * _args, int bserrno)
 
 static void __blobfs2_direct_blob_resize_cb(void *_args, int bserrno) {
 	struct spdk_fs_request * req = _args;
+	struct spdk_file * file = req->args.file;
 	if (bserrno) {
 		__blobfs2_direct_blob_resize_done(_args, bserrno);
 	} else {
+		spdk_blob_set_xattr(file->blob, "length", &file->resizing, sizeof(file->resizing));
 		spdk_blob_sync_md(req->args.file->blob, __blobfs2_direct_blob_resize_done, req);
 	}
 }
