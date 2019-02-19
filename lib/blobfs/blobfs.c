@@ -2677,7 +2677,7 @@ cache_free_buffers(struct spdk_file *file)
 /* new interfaces for supporting random access and direct I/O in BlobFS */
 #include "spdk/barrier.h"
 #include <fcntl.h>
-#include <lib/blob/blobstore.h>
+#include "../blob/blobstore.h"
 
 #ifndef __linux__
 #define O_DIRECT 1
