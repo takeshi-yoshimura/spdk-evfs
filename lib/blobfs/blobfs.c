@@ -2911,9 +2911,9 @@ static void __blobfs2_resize_cb(void * _args)
 	struct spdk_fs_request * req = _args;
 	struct spdk_fs_cb_args * args = &req->args;
 	struct spdk_file *file = args->file;
-	uint64_t blob_size = __blobfs2_blob_md_size(file->blob);
+	uint64_t nr_cllusters = spdk_blob_get_num_clusters(file->blob);
 	uint64_t new_length = args->op.blobfs2_rw.offset + args->op.blobfs2_rw.length;
-	uint64_t new_blob_size = __bytes_to_clusters(new_length, file->fs->bs_opts.cluster_sz);
+	uint64_t new_nr_clusters = __bytes_to_clusters(new_length, file->fs->bs_opts.cluster_sz);
 
 	if (__blobfs2_blob_is_resizing(file)) {
 		// resize is in-processing. postpone this request after the resize to avoid -EBUSY
@@ -2922,12 +2922,12 @@ static void __blobfs2_resize_cb(void * _args)
 		return;
 	}
 
-	if (file->length == new_length || blob_size == new_blob_size) {
+	if (file->length == new_length || nr_cllusters == new_nr_clusters) {
 		// no need to expand blob. update in-memory metadata only
 		file->length = new_length;
 		args->fn.resize_op(_args, 0);
 	} else {
-		spdk_blob_resize(file->blob, new_blob_size, __blobfs2_resize_done, req);
+		spdk_blob_resize(file->blob, new_nr_clusters, __blobfs2_resize_done, req);
 	}
 }
 
@@ -3056,7 +3056,7 @@ static void __blobfs2_rw_copy_buffer(void * _args, int bserrno)
     uint64_t buffer_offset = offset - offset % CACHE_BUFFER_SIZE;
 
     if (bserrno) {
-        SPDK_ERRLOG("failed to fetch on-disk data\n");
+        SPDK_ERRLOG("failed to fetch on-disk data : %d\n", bserrno);
 		__blobfs2_rw_last(buffer, req, -EIO);
         return;
     }
@@ -3097,6 +3097,7 @@ static void __blobfs2_rw_buffered(void * _args)
 	uint64_t buffer_offset = offset - offset % CACHE_BUFFER_SIZE;
 	uint64_t start_lba, num_lba;
 	uint32_t lba_size;
+	uint64_t blob_size;
 
 	if (offset + length >= buffer_offset + CACHE_BUFFER_SIZE) {
 		length = CACHE_BUFFER_SIZE - (offset - buffer_offset);
@@ -3139,14 +3140,25 @@ static void __blobfs2_rw_buffered(void * _args)
 	blobfs2_insert_buffer(file, buffer, buffer_offset);
 	args->op.blobfs2_rw.buffer = buffer;
 
-	if (!args->op.blobfs2_rw.is_read && ((offset % CACHE_BUFFER_SIZE == 0 && length % CACHE_BUFFER_SIZE == 0) || offset > file->length)) {
+	blob_size = __blobfs2_blob_md_size(file->blob);
+	if (file->length < blob_size) {
+		blob_size = file->length;
+	}
+	if (buffer_offset < blob_size) {
+		// fetch on-disk data
+		uint64_t len = length;
+		if (len > blob_size - buffer_offset) {
+			len = blob_size - buffer_offset;
+		}
+		if (len > CACHE_BUFFER_SIZE) {
+			len = CACHE_BUFFER_SIZE;
+		}
+		__get_page_parameters(file, buffer_offset, len, &start_lba, &lba_size, &num_lba);
+		spdk_blob_io_read(args->file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
+						  buffer->buf + (start_lba * lba_size) - buffer_offset, start_lba, num_lba, __blobfs2_rw_copy_buffer, req);
+	} else {
 		// no need to fetch on-disk data before write. copy and return immediately.
 		__blobfs2_rw_copy_buffer(req, 0);
-	} else {
-		// fetch on-disk data
-		__get_page_parameters(file, buffer_offset, CACHE_BUFFER_SIZE, &start_lba, &lba_size, &num_lba);
-		spdk_blob_io_read(args->file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
-						  buffer->buf + (start_lba * lba_size) - offset, start_lba, num_lba, __blobfs2_rw_copy_buffer, req);
 	}
 }
 
