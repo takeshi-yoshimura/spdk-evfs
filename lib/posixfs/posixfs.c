@@ -502,8 +502,8 @@ static int __hookfs_deletefile(const char * blobfspath) {
         goto close_file;
     }
 
-// truncate does not behave as expected. so recreate the file
-    rc = spdk_fs_delete_file(g_fs, g_channel, parent);
+// truncate does not behave as expected. so recreate the file. TODO: fix this
+    rc = blobfs2_delete_file(g_fs, g_channel, parent);
     if (rc) {
         errno = -rc;
         goto free_buf;
@@ -763,7 +763,7 @@ realfs_close:
     realfs.close(fd);
 
     if (creating) {
-        spdk_fs_delete_file(g_fs, g_channel, blobfspath);
+        blobfs2_delete_file(g_fs, g_channel, blobfspath);
     }
 
     errno = -rc;
@@ -1397,7 +1397,7 @@ static int hookfs_unlink(const char *abspath) {
     }
     int rc = __hookfs_deletefile(blobfspath);
     if (rc == 0) {
-        rc = spdk_fs_delete_file(g_fs, g_channel, blobfspath);
+        rc = blobfs2_delete_file(g_fs, g_channel, blobfspath);
         if (rc) {
             errno = -rc;
             return -1;
@@ -1424,7 +1424,7 @@ static int hookfs_rmdir(const char *abspath) {
     if(__hookfs_isemptydir(blobfspath) > 0) {
         int rc = __hookfs_deletefile(blobfspath);
         if (rc == 0) {
-            int rc = spdk_fs_delete_file(g_fs, g_channel, blobfspath);
+            int rc = blobfs2_delete_file(g_fs, g_channel, blobfspath);
             if (rc) {
                 errno = -rc;
                 return -1;

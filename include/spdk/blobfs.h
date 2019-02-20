@@ -281,6 +281,9 @@ int spdk_fs_rename_file(struct spdk_filesystem *fs, struct spdk_io_channel *chan
 int spdk_fs_delete_file(struct spdk_filesystem *fs, struct spdk_io_channel *channel,
 			const char *name);
 
+int blobfs2_delete_file(struct spdk_filesystem *fs, struct spdk_io_channel *channel,
+                        const char *name);
+
 /**
  * Get the first file in the blobstore filesystem.
  *
