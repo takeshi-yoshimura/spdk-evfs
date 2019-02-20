@@ -2871,9 +2871,10 @@ uint64_t blobfs2_fstat_unsafe(struct spdk_file * file)
 
 static void __blobfs2_resubmit_op_after_resize(struct spdk_fs_request *req)
 {
-    struct spdk_fs_request * dreq;
-    TAILQ_FOREACH(dreq, &req->args.file->resize_waiter, args.op.blobfs2_rw.resize_tailq) {
-        dreq->channel->send_request(dreq->args.delayed_fn.resize_op, dreq);
+    while (!TAILQ_EMPTY(&req->args.file->resize_waiter)) {
+		struct spdk_fs_request * dreq = TAILQ_FIRST(&req->args.file->resize_waiter);
+		TAILQ_REMOVE(&req->args.file->resize_waiter, dreq, args.op.blobfs2_rw.resize_tailq);
+		req->channel->send_request(dreq->args.delayed_fn.resize_op, dreq);
     }
 }
 
@@ -2916,6 +2917,7 @@ static void __blobfs2_resize_cb(void * _args)
 
 	if (__blobfs2_blob_is_resizing(file)) {
 		// resize is in-processing. postpone this request after the resize to avoid -EBUSY
+		args->delayed_fn.resize_op = __blobfs2_resize_cb;
 		TAILQ_INSERT_TAIL(&file->resize_waiter, req, args.op.blobfs2_rw.resize_tailq);
 		return;
 	}
@@ -2974,7 +2976,7 @@ static void __blobfs2_rw_last(struct cache_buffer *buffer, struct spdk_fs_reques
         blobfs2_put_buffer(buffer);
         // resubmit delayed reads/writes
         TAILQ_FOREACH(dreq, &buffer->write_waiter, args.op.blobfs2_rw.write_tailq) {
-            dreq->channel->send_request(dreq->args.delayed_fn.write_op, dreq);
+            req->channel->send_request(dreq->args.delayed_fn.write_op, dreq);
         }
     }
 
@@ -3017,7 +3019,7 @@ static void __blobfs2_flush_buffer_blob(void * _args)
 	    return;
 	}
     buffer->in_progress = true;
-    __get_page_parameters(file, buffer_offset, buffer->buf_size, &start_lba, &lba_size, &num_lba);
+    __get_page_parameters(file, buffer_offset, CACHE_BUFFER_SIZE, &start_lba, &lba_size, &num_lba);
     spdk_blob_io_write(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
                        buffer->buf + (start_lba * lba_size) - buffer_offset,
                        start_lba, num_lba, __blobfs2_buffer_flush_done, req);
@@ -3059,8 +3061,10 @@ static void __blobfs2_rw_copy_buffer(void * _args, int bserrno)
 		memcpy(payload, buffer->buf + offset - buffer_offset, length);
     } else {
 		memcpy(buffer->buf + offset - buffer_offset, payload, length);
-		buffer->dirty = true;
-		TAILQ_INSERT_TAIL(&file->dirty_buffers, buffer, dirty_tailq);
+		if (!buffer->dirty) {
+			buffer->dirty = true;
+			TAILQ_INSERT_TAIL(&file->dirty_buffers, buffer, dirty_tailq);
+		}
 		if (offset + length > file->length) {
 			file->length = offset + length;
 		}
@@ -3379,6 +3383,7 @@ static void __blobfs2_sync_cb(void * _args, int bserrno)
 
 		blobfs2_buffer_up(buffer);
 		subreq->args.file = file;
+		subreq->channel = req->channel;
         subreq->args.op.blobfs2_rw.buffer = buffer;
 		subreq->args.op.blobfs2_rw.offset = buffer->offset;
 		subreq->args.op.blobfs2_rw.length = buffer->buf_size;
