@@ -3337,6 +3337,8 @@ static void __blobfs2_sync_md(struct spdk_fs_request * req, struct spdk_file * f
     if (old_length != file->length) {
         spdk_blob_set_xattr(file->blob, "length", &file->length, sizeof(file->length));
         spdk_blob_sync_md(file->blob, __wake_caller, req);
+    } else {
+        sem_post(req->args.sem);
     }
 }
 
