@@ -561,8 +561,6 @@ file_alloc(struct spdk_filesystem *fs)
     TAILQ_INIT(&file->resize_waiter);
     TAILQ_INIT(&file->zeroref_caches);
 	pthread_spin_init(&file->lock, 0);
-    pthread_spin_init(&file->writeorder_lock, 0);
-    pthread_spin_init(&file->buffer_lock, 0);
 	TAILQ_INSERT_TAIL(&fs->files, file, tailq);
 	file->priority = SPDK_FILE_PRIORITY_LOW;
 	return file;
