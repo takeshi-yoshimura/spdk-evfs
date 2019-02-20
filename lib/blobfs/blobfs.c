@@ -3029,10 +3029,12 @@ static void __blobfs2_flush_buffer_blob(void * _args)
 
 static void __blobfs2_buffered_blob_resize_done(void * _args, int bserrno)
 {
+	struct spdk_fs_request * req = _args;
+	req->args.fn.resize_op = NULL;
 	if (bserrno) {
-		__blobfs2_rw_last(((struct spdk_fs_request *)_args)->args.op.blobfs2_rw.buffer, _args, bserrno);
+		__blobfs2_rw_last(req->args.op.blobfs2_rw.buffer, _args, bserrno);
 	} else {
-		__blobfs2_flush_buffer_blob(_args);
+		__blobfs2_flush_buffer_blob(req);
 	}
 }
 
@@ -3193,6 +3195,8 @@ static void __blobfs2_write_direct_blob(void * _args)
 
 static void __blobfs2_write_direct_blob_resize_done(void * _args, int bserrno)
 {
+	struct spdk_fs_request * req = _args;
+	req->args.fn.resize_op = NULL;
 	if (bserrno) {
 		__blobfs2_rw_last(NULL, _args, bserrno);
 	} else {
