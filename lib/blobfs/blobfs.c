@@ -2911,7 +2911,7 @@ static void __blobfs2_resize_cb(void * _args)
 	struct spdk_fs_request * req = _args;
 	struct spdk_fs_cb_args * args = &req->args;
 	struct spdk_file *file = args->file;
-	uint64_t nr_cllusters = spdk_blob_get_num_clusters(file->blob);
+	uint64_t nr_clusters = spdk_blob_get_num_clusters(file->blob);
 	uint64_t new_length = args->op.blobfs2_rw.offset + args->op.blobfs2_rw.length;
 	uint64_t new_nr_clusters = __bytes_to_clusters(new_length, file->fs->bs_opts.cluster_sz);
 
@@ -2922,12 +2922,12 @@ static void __blobfs2_resize_cb(void * _args)
 		return;
 	}
 
-	if (file->length == new_length || nr_cllusters == new_nr_clusters) {
+	if (new_nr_clusters != nr_clusters) {
+		spdk_blob_resize(file->blob, new_nr_clusters, __blobfs2_resize_done, req);
+	} else {
 		// no need to expand blob. update in-memory metadata only
 		file->length = new_length;
 		args->fn.resize_op(_args, 0);
-	} else {
-		spdk_blob_resize(file->blob, new_nr_clusters, __blobfs2_resize_done, req);
 	}
 }
 
