@@ -2736,6 +2736,7 @@ static struct cache_buffer * blobfs2_alloc_buffer(struct spdk_blob_store * bs)
 	buf->buf_size = CACHE_BUFFER_SIZE;
 	buf->ref = 1;
 	memset(buf->buf, 0, CACHE_BUFFER_SIZE);
+    TAILQ_INIT(&buf->write_waiter);
 
 	return buf;
 }
@@ -2872,7 +2873,7 @@ static void __blobfs2_resubmit_op_after_resize(struct spdk_fs_request *req)
 {
     struct spdk_fs_request * dreq;
     TAILQ_FOREACH(dreq, &req->args.file->resize_waiter, args.op.blobfs2_rw.resize_tailq) {
-        req->channel->send_request(dreq->args.delayed_fn.resize_op, dreq);
+        dreq->channel->send_request(dreq->args.delayed_fn.resize_op, dreq);
     }
 }
 
@@ -2973,7 +2974,7 @@ static void __blobfs2_rw_last(struct cache_buffer *buffer, struct spdk_fs_reques
         blobfs2_put_buffer(buffer);
         // resubmit delayed reads/writes
         TAILQ_FOREACH(dreq, &buffer->write_waiter, args.op.blobfs2_rw.write_tailq) {
-            req->channel->send_request(req->args.delayed_fn.write_op, dreq);
+            dreq->channel->send_request(dreq->args.delayed_fn.write_op, dreq);
         }
     }
 
@@ -3010,7 +3011,7 @@ static void __blobfs2_flush_buffer_blob(void * _args)
 	uint32_t lba_size;
 	uint64_t buffer_offset = offset - offset % CACHE_BUFFER_SIZE;
 
-	if (!buffer || !buffer->dirty) {
+	if (!buffer || !buffer->dirty || buffer->in_progress) {
 		// no need to flush
 		__blobfs2_rw_last(buffer, req, 0);
 	    return;
@@ -3025,7 +3026,7 @@ static void __blobfs2_flush_buffer_blob(void * _args)
 static void __blobfs2_buffered_blob_resize_done(void * _args, int bserrno)
 {
 	if (bserrno) {
-		__blobfs2_rw_last(NULL, _args, bserrno);
+		__blobfs2_rw_last(((struct spdk_fs_request *)_args)->args.op.blobfs2_rw.buffer, _args, bserrno);
 	} else {
 		__blobfs2_flush_buffer_blob(_args);
 	}
@@ -3064,6 +3065,7 @@ static void __blobfs2_rw_copy_buffer(void * _args, int bserrno)
 			file->length = offset + length;
 		}
 		if (args->op.blobfs2_rw.oflag & (O_SYNC | O_DSYNC)) {
+            buffer->in_progress = false;
 			__blobfs2_flush_buffer(req);
 			return;
 		}
@@ -3123,7 +3125,6 @@ static void __blobfs2_rw_buffered(void * _args)
 		return;
 	}
 	buffer->in_progress = true;
-	blobfs2_buffer_up(buffer);
 	blobfs2_insert_buffer(file, buffer, buffer_offset);
 	args->op.blobfs2_rw.buffer = buffer;
 
@@ -3329,6 +3330,16 @@ int64_t blobfs2_read(struct spdk_file *file, struct spdk_io_channel * _channel, 
 	return blobfs2_rw(file, _channel, payload, offset, length, oflag, true);
 }
 
+static void __blobfs2_sync_md(struct spdk_fs_request * req, struct spdk_file * file)
+{
+    uint64_t old_length;
+    old_length = __blobfs2_blob_md_size(file->blob);
+    if (old_length != file->length) {
+        spdk_blob_set_xattr(file->blob, "length", &file->length, sizeof(file->length));
+        spdk_blob_sync_md(file->blob, __wake_caller, req);
+    }
+}
+
 static void __blobfs2_sync_done(void * _args, int bserrno)
 {
 	struct spdk_fs_request * req = _args;
@@ -3336,8 +3347,7 @@ static void __blobfs2_sync_done(void * _args, int bserrno)
 	req->args.rc = bserrno;
     req->args.fn.file_op = NULL;
 	TAILQ_REMOVE(&req->args.file->sync_requests, req, args.op.blobfs2_rw.sync_tailq);
-	spdk_blob_set_xattr(file->blob, "length", &file->length, sizeof(file->length));
-	spdk_blob_sync_md(file->blob, __wake_caller, req);
+	__blobfs2_sync_md(req, file);
 }
 
 static void __blobfs2_sync_cb(void * _args, int bserrno)
@@ -3349,8 +3359,7 @@ static void __blobfs2_sync_cb(void * _args, int bserrno)
 
 	if (TAILQ_EMPTY(&file->dirty_buffers)) {
 		args->rc = 0;
-		spdk_blob_set_xattr(file->blob, "length", &file->length, sizeof(file->length));
-		spdk_blob_sync_md(file->blob, __wake_caller, req);
+        __blobfs2_sync_md(req, file);
 		return;
 	}
 
@@ -3359,12 +3368,10 @@ static void __blobfs2_sync_cb(void * _args, int bserrno)
 
 		if (!subreq) {
 			args->rc = -ENOMEM;
-			spdk_blob_set_xattr(file->blob, "length", &file->length, sizeof(file->length));
-			spdk_blob_sync_md(file->blob, __wake_caller, req);
+            __blobfs2_sync_md(req, file);
 			return;
 		}
 
-		assert(!buffer->in_progress);
 		blobfs2_buffer_up(buffer);
 		subreq->args.file = file;
         subreq->args.op.blobfs2_rw.buffer = buffer;
