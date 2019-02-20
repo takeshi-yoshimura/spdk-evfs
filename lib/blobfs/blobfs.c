@@ -3015,6 +3015,7 @@ static void __blobfs2_flush_buffer_blob(void * _args)
 		__blobfs2_rw_last(buffer, req, 0);
 	    return;
 	}
+    buffer->in_progress = true;
     __get_page_parameters(file, buffer_offset, CACHE_BUFFER_SIZE, &start_lba, &lba_size, &num_lba);
     spdk_blob_io_write(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
                        buffer->buf + (start_lba * lba_size) - buffer_offset,
@@ -3371,7 +3372,6 @@ static void __blobfs2_sync_cb(void * _args, int bserrno)
 		subreq->args.op.blobfs2_rw.length = CACHE_BUFFER_SIZE;
 		subreq->args.fn.file_op = NULL;
 		subreq->args.sem = NULL;
-		buffer->in_progress = true;
 		TAILQ_INSERT_TAIL(&file->sync_requests, subreq, args.op.blobfs2_rw.sync_tailq);
 		if (TAILQ_NEXT(buffer, dirty_tailq) == NULL) {
 			args->fn.file_op = __blobfs2_sync_done;
