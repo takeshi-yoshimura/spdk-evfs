@@ -42,10 +42,10 @@ struct spdk_fs_request;
 struct cache_buffer {
 	uint8_t			*buf;
 	uint64_t		offset;
-	uint32_t		buf_size;
-	uint32_t		bytes_filled;
+	uint64_t		buf_size;
+	uint64_t		bytes_filled;
 	union {
-		uint32_t bytes_flushed;
+		uint64_t bytes_flushed;
 		bool dirty;
 	};
 	bool			in_progress;

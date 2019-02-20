@@ -2733,7 +2733,7 @@ static struct cache_buffer * blobfs2_alloc_buffer(struct spdk_blob_store * bs)
 		buf->buf = dma;
 	}
 
-	buf->buf_size = CACHE_BUFFER_SIZE;
+	buf->buf_size = 0;
 	buf->ref = 1;
 	memset(buf->buf, 0, CACHE_BUFFER_SIZE);
     TAILQ_INIT(&buf->write_waiter);
@@ -3017,7 +3017,7 @@ static void __blobfs2_flush_buffer_blob(void * _args)
 	    return;
 	}
     buffer->in_progress = true;
-    __get_page_parameters(file, buffer_offset, CACHE_BUFFER_SIZE, &start_lba, &lba_size, &num_lba);
+    __get_page_parameters(file, buffer_offset, buffer->buf_size, &start_lba, &lba_size, &num_lba);
     spdk_blob_io_write(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
                        buffer->buf + (start_lba * lba_size) - buffer_offset,
                        start_lba, num_lba, __blobfs2_buffer_flush_done, req);
@@ -3063,6 +3063,9 @@ static void __blobfs2_rw_copy_buffer(void * _args, int bserrno)
 		TAILQ_INSERT_TAIL(&file->dirty_buffers, buffer, dirty_tailq);
 		if (offset + length > file->length) {
 			file->length = offset + length;
+		}
+		if (offset + length > buffer->offset + buffer->buf_size) {
+		    buffer->buf_size = offset + length - buffer->offset;
 		}
 		if (args->op.blobfs2_rw.oflag & (O_SYNC | O_DSYNC)) {
             buffer->in_progress = false;
@@ -3378,7 +3381,7 @@ static void __blobfs2_sync_cb(void * _args, int bserrno)
 		subreq->args.file = file;
         subreq->args.op.blobfs2_rw.buffer = buffer;
 		subreq->args.op.blobfs2_rw.offset = buffer->offset;
-		subreq->args.op.blobfs2_rw.length = CACHE_BUFFER_SIZE;
+		subreq->args.op.blobfs2_rw.length = buffer->buf_size;
 		subreq->args.fn.file_op = NULL;
 		subreq->args.sem = NULL;
 		TAILQ_INSERT_TAIL(&file->sync_requests, subreq, args.op.blobfs2_rw.sync_tailq);
