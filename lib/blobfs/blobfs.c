@@ -92,7 +92,7 @@ struct spdk_file {
     TAILQ_HEAD(sync_requests_head, spdk_fs_request) sync_requests;
     TAILQ_HEAD(dirty_buffer_head, cache_buffer) dirty_buffers;
     TAILQ_HEAD(resize_waiter_head, spdk_fs_request) resize_waiter;
-	static TAILQ_HEAD(, cache_buffer) zeroref_caches;
+    TAILQ_HEAD(, cache_buffer) zeroref_caches;
 	TAILQ_ENTRY(spdk_file)	cache_tailq;
 };
 
