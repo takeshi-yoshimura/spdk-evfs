@@ -2957,7 +2957,7 @@ static void __blobfs2_rw_last(struct cache_buffer *buffer, struct spdk_fs_reques
 {
     struct spdk_file * file = req->args.file;
 	struct spdk_fs_cb_args * args = &req->args;
-    struct spdk_fs_request * head, * dreq;
+    struct spdk_fs_request * head;
 
     if (!args->op.blobfs2_rw.is_read) {
 		free(args->op.blobfs2_rw.user_buf);
@@ -2975,8 +2975,10 @@ static void __blobfs2_rw_last(struct cache_buffer *buffer, struct spdk_fs_reques
         buffer->in_progress = false;
         blobfs2_put_buffer(buffer);
         // resubmit delayed reads/writes
-        TAILQ_FOREACH(dreq, &buffer->write_waiter, args.op.blobfs2_rw.write_tailq) {
-            req->channel->send_request(dreq->args.delayed_fn.write_op, dreq);
+        while (!TAILQ_EMPTY(&buffer->write_waiter)) {
+        	struct spdk_fs_request * dreq = TAILQ_FIRST(&buffer->write_waiter);
+			req->channel->send_request(dreq->args.delayed_fn.write_op, dreq);
+        	TAILQ_REMOVE(&buffer->write_waiter, dreq, args.op.blobfs2_rw.write_tailq);
         }
     }
 
@@ -3340,6 +3342,10 @@ int64_t blobfs2_read(struct spdk_file *file, struct spdk_io_channel * _channel, 
 static void __blobfs2_sync_md(struct spdk_fs_request * req, struct spdk_file * file)
 {
     uint64_t old_length;
+    if (!file->blob) {
+    	sem_post(req->args.sem);
+    	return;
+    }
     old_length = __blobfs2_blob_md_size(file->blob);
     if (old_length != file->length) {
         spdk_blob_set_xattr(file->blob, "length", &file->length, sizeof(file->length));
