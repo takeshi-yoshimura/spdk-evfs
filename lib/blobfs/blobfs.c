@@ -2691,14 +2691,6 @@ static void init_blobfs2(void) {
 	}
 }
 
-static void blobfs2_free_buffer(struct cache_buffer * buf) {
-    if (buf != NULL) {
-        spdk_dma_free(buf->buf);
-        free(buf);
-        g_dmasize -= CACHE_BUFFER_SIZE;
-    }
-}
-
 static struct cache_buffer * blobfs2_alloc_buffer(struct spdk_file * file)
 {
 	struct cache_buffer *buf;
@@ -3114,7 +3106,7 @@ static void __blobfs2_rw_buffered(void * _args)
 	}
 
 	// cache miss.
-	buffer = blobfs2_alloc_buffer(file->fs->bs);
+	buffer = blobfs2_alloc_buffer(file);
 	if (!buffer) {
 		__blobfs2_rw_last(buffer, req, -ENOMEM);
 		return;
@@ -3506,6 +3498,7 @@ static void __blobfs2_drop_cache(struct spdk_file * file)
 			struct cache_buffer * buffer = spdk_tree_find_buffer(file->tree, off);
 			if (buffer) {
 				spdk_dma_free(buffer->buf);
+				g_dmasize -= CACHE_BUFFER_SIZE;
 			}
 		}
 	}
