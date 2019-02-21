@@ -59,7 +59,7 @@ static TAILQ_HEAD(, spdk_file) g_caches;
 static int g_fs_count = 0;
 static pthread_mutex_t g_cache_init_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_spinlock_t g_caches_lock;
-static bool g_fs_sync = 0;
+static int g_dirty_ratio = 20;
 
 void
 spdk_cache_buffer_free(struct cache_buffer *cache_buffer)
@@ -91,7 +91,8 @@ struct spdk_file {
 	TAILQ_HEAD(open_requests_head, spdk_fs_request) open_requests;
     TAILQ_HEAD(sync_requests_head, spdk_fs_request) sync_requests;
     TAILQ_HEAD(dirty_buffer_head, cache_buffer) dirty_buffers;
-    TAILQ_HEAD(resize_waiter_head, spdk_fs_request) resize_waiter;
+	TAILQ_HEAD(resize_waiter_head, spdk_fs_request) resize_waiter;
+	TAILQ_HEAD(evict_waiter_head, spdk_fs_request) evict_waiter;
     TAILQ_HEAD(, cache_buffer) zeroref_caches;
 	TAILQ_ENTRY(spdk_file)	cache_tailq;
 };
@@ -211,7 +212,8 @@ struct spdk_fs_cb_args {
             struct cache_buffer * buffer;
             TAILQ_ENTRY(spdk_fs_request) sync_tailq;
             TAILQ_ENTRY(spdk_fs_request) resize_tailq;
-            TAILQ_ENTRY(spdk_fs_request) write_tailq;
+			TAILQ_ENTRY(spdk_fs_request) write_tailq;
+			TAILQ_ENTRY(spdk_fs_request) evict_tailq;
 		} blobfs2_rw;
 		struct {
 			const char * name;
@@ -453,7 +455,11 @@ fs_conf_parse(void)
 		g_fs_cache_buffer_shift = CACHE_BUFFER_SHIFT_DEFAULT;
 	}
 
-	g_fs_sync = spdk_conf_section_get_boolval(sp, "Sync", false);
+	g_dirty_ratio = spdk_conf_section_get_intval(sp, "DirtyRatio");
+	if (g_dirty_ratio <= 0 || g_dirty_ratio >= 100) {
+		SPDK_WARNLOG("DirtyRatio must be > 1 and < 99\n");
+		g_dirty_ratio = 20;
+	}
 }
 
 static struct spdk_filesystem *
@@ -562,7 +568,8 @@ file_alloc(struct spdk_filesystem *fs)
 	TAILQ_INIT(&file->open_requests);
 	TAILQ_INIT(&file->sync_requests);
     TAILQ_INIT(&file->dirty_buffers);
-    TAILQ_INIT(&file->resize_waiter);
+	TAILQ_INIT(&file->resize_waiter);
+	TAILQ_INIT(&file->evict_waiter);
     TAILQ_INIT(&file->zeroref_caches);
 	pthread_spin_init(&file->lock, 0);
 	TAILQ_INSERT_TAIL(&fs->files, file, tailq);
@@ -2687,9 +2694,13 @@ cache_free_buffers(struct spdk_file *file)
 
 static uint64_t g_dmasize = 0;
 static uint64_t g_page_size;
+static uint64_t g_nr_buffers;
+static uint64_t g_nr_dirties;
+static TAILQ_HEAD(, spdk_fs_request) g_evict_waiter;
 
 static void init_blobfs2(void) {
 	g_page_size = sysconf(_SC_PAGESIZE);
+	TAILQ_INIT(&g_evict_waiter);
 	if (CACHE_BUFFER_SIZE < g_page_size) {
 		SPDK_WARNLOG("CacheBufferShift should be larger than page shift for this platform. This hurts Blobfs2 performance\n");
 	}
@@ -2739,6 +2750,7 @@ static struct cache_buffer * blobfs2_alloc_buffer(struct spdk_file * file)
 	memset(buf->buf, 0, CACHE_BUFFER_SIZE);
     TAILQ_INIT(&buf->write_waiter);
 
+    ++g_nr_buffers;
 	return buf;
 }
 
@@ -2761,7 +2773,8 @@ static void blobfs2_buffer_up(struct spdk_file * file, struct cache_buffer * buf
 
 static void blobfs2_put_buffer(struct spdk_file * file, struct cache_buffer * buffer)
 {
-    if (!buffer->in_progress && --buffer->ref == 0) {
+	assert(!buffer->in_progress);
+    if (--buffer->ref == 0 && !buffer->dirty) {
 		TAILQ_INSERT_TAIL(&file->zeroref_caches, buffer, zeroref_tailq);
     }
 }
@@ -2775,8 +2788,8 @@ static struct spdk_fs_request * blobfs2_alloc_fs_request(struct spdk_fs_channel 
 	}
 	req = calloc(1, sizeof(*req));
 	if (req) {
-		req->args.from_request = false;
 		memset(req, 0, sizeof(*req));
+		req->args.from_request = false;
 		req->channel = channel;
 		return req;
 	}
@@ -2976,6 +2989,12 @@ static void __blobfs2_rw_last(struct cache_buffer *buffer, struct spdk_fs_reques
         }
     }
 
+    while (!TAILQ_EMPTY(&g_evict_waiter)) {
+    	struct spdk_fs_request * dreq = TAILQ_FIRST(&g_evict_waiter);
+    	req->channel->send_request(dreq->args.delayed_fn.write_op, dreq);
+    	TAILQ_REMOVE(&g_evict_waiter, dreq, args.op.blobfs2_rw.evict_tailq);
+    }
+
     if (args->sem) {
 		args->rc = rc;
 		sem_post(args->sem);
@@ -2993,6 +3012,7 @@ static void __blobfs2_buffer_flush_done(void * _args, int bserrno)
 
 	if (bserrno == 0) {
         buffer->dirty = false;
+		--g_nr_dirties;
         TAILQ_REMOVE(&file->dirty_buffers, buffer, dirty_tailq);
     }
 	__blobfs2_rw_last(buffer, req, bserrno);
@@ -3094,10 +3114,57 @@ static void __blobfs2_rw_copy_buffer(void * _args, int bserrno)
 		}
 		if (!buffer->dirty) {
 			buffer->dirty = true;
+			++g_nr_dirties;
 			TAILQ_INSERT_TAIL(&file->dirty_buffers, buffer, dirty_tailq);
 		}
     }
 	__blobfs2_rw_last(buffer, req, 0);
+}
+
+static int blobfs2_evict_cache(void * _args)
+{
+	struct spdk_fs_request * req = _args;
+	struct spdk_fs_cb_args * args = &req->args;
+	struct spdk_file * file = args->file;
+	struct cache_buffer * buffer;
+	uint64_t nr_evict;
+
+	if (g_nr_dirties * g_dirty_ratio < g_nr_buffers * 100) {
+		return 0;
+	}
+	nr_evict = (g_nr_buffers * g_dirty_ratio / 100 - g_nr_dirties) * 2;
+	if (nr_evict == 0) {
+		return 0;
+	}
+
+	TAILQ_FOREACH(buffer, &file->dirty_buffers, dirty_tailq) {
+		struct spdk_fs_request * subreq;
+
+		if (buffer->in_progress) {
+			continue;
+		}
+
+		subreq = blobfs2_alloc_fs_request(req->channel);
+
+		if (!subreq) {
+			return -ENOMEM;
+		}
+
+		blobfs2_buffer_up(file, buffer);
+		subreq->args.file = file;
+		subreq->channel = req->channel;
+		subreq->args.op.blobfs2_rw.buffer = buffer;
+		subreq->args.op.blobfs2_rw.offset = buffer->offset;
+		subreq->args.op.blobfs2_rw.length = buffer->buf_size;
+		subreq->args.fn.file_op = NULL;
+		subreq->args.sem = NULL;
+		TAILQ_INSERT_TAIL(&file->sync_requests, subreq, args.op.blobfs2_rw.sync_tailq);
+		__blobfs2_flush_buffer(subreq);
+		if (--nr_evict > 0) {
+			break;
+		}
+	}
+	return 0;
 }
 
 static void __blobfs2_rw_resubmit(void * _args);
@@ -3114,6 +3181,11 @@ static void __blobfs2_rw_buffered(void * _args)
 	uint64_t start_lba, num_lba;
 	uint32_t lba_size;
 	uint64_t blob_size;
+
+	if (blobfs2_evict_cache(req)) {
+		__blobfs2_rw_last(NULL, req, -ENOMEM);
+		return;
+	}
 
 	if (offset + length >= buffer_offset + CACHE_BUFFER_SIZE) {
 		length = CACHE_BUFFER_SIZE - (offset - buffer_offset);
@@ -3149,7 +3221,9 @@ static void __blobfs2_rw_buffered(void * _args)
 	// cache miss.
 	buffer = blobfs2_alloc_buffer(file);
 	if (!buffer) {
-		__blobfs2_rw_last(buffer, req, -ENOMEM);
+		// should evict dirtied buffers. postpone this request after the eviction.
+		args->delayed_fn.write_op = __blobfs2_rw_resubmit;
+		TAILQ_INSERT_TAIL(&g_evict_waiter, req, args.op.blobfs2_rw.sync_tailq);
 		return;
 	}
 	buffer->in_progress = true;
