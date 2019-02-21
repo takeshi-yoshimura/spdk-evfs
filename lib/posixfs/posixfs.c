@@ -219,10 +219,9 @@ __call_fn(void *arg1, void *arg2)
 {
     fs_request_fn fn;
 
-    ++g_nr_events;
+    --g_nr_events;
     fn = (fs_request_fn)arg1;
     fn(arg2);
-    --g_nr_events;
 }
 
 static void
@@ -230,6 +229,7 @@ __send_request(fs_request_fn fn, void *arg)
 {
     struct spdk_event *event;
 
+    ++g_nr_events;
     event = spdk_event_allocate(0, __call_fn, (void *)fn, arg);
     spdk_event_call(event);
 }
