@@ -201,18 +201,22 @@ struct spdk_fs_cb_args {
 			const char	*name;
 		} stat;
 		struct {
-            void		*user_buf;
-            void		*pin_buf;
-            uint64_t		offset;
-            uint64_t		length;
+            void * user_buf;
+            void * pin_buf;
+            uint64_t offset;
+            uint64_t length;
 			int oflag;
             bool is_read;
             bool delayed;
             struct cache_buffer * buffer;
-            TAILQ_ENTRY(spdk_fs_request)	sync_tailq;
-            TAILQ_ENTRY(spdk_fs_request)	resize_tailq;
-            TAILQ_ENTRY(spdk_fs_request)	write_tailq;
+            TAILQ_ENTRY(spdk_fs_request) sync_tailq;
+            TAILQ_ENTRY(spdk_fs_request) resize_tailq;
+            TAILQ_ENTRY(spdk_fs_request) write_tailq;
 		} blobfs2_rw;
+		struct {
+			const char * name;
+			int mode;
+		} blobfs2_access;
 	} op;
 };
 
@@ -2691,6 +2695,14 @@ static void init_blobfs2(void) {
 	}
 }
 
+static void __blobfs2_wake_caller(void * _args, int rc)
+{
+	struct spdk_fs_request * req = _args;
+
+	req->args.rc = rc;
+	sem_post(req->args.sem);
+}
+
 static struct cache_buffer * blobfs2_alloc_buffer(struct spdk_file * file)
 {
 	struct cache_buffer *buf;
@@ -2920,7 +2932,7 @@ int blobfs2_truncate(struct spdk_file * file, struct spdk_io_channel * _channel,
 	req->args.sem = &channel->sem;
 	req->args.op.blobfs2_rw.offset = 0;
 	req->args.op.blobfs2_rw.length = length;
-	req->args.fn.resize_op = __wake_caller;
+	req->args.fn.resize_op = __blobfs2_wake_caller;
 	channel->send_request(__blobfs2_resize_cb, req);
 	sem_wait(&channel->sem);
 	blobfs2_free_fs_request(req);
@@ -3340,7 +3352,7 @@ static void __blobfs2_sync_md(struct spdk_fs_request * req, struct spdk_file * f
     old_length = __blobfs2_blob_md_size(file->blob);
     if (old_length != file->length) {
         spdk_blob_set_xattr(file->blob, "length", &file->length, sizeof(file->length));
-        spdk_blob_sync_md(file->blob, __wake_caller, req);
+        spdk_blob_sync_md(file->blob, __blobfs2_wake_caller, req);
     } else {
         sem_post(req->args.sem);
     }
@@ -3452,7 +3464,7 @@ int blobfs2_barrier(struct spdk_file * file, struct spdk_io_channel * _channel) 
 
 	req->args.file = file;
 	req->args.sem = &channel->sem;
-	req->args.fn.file_op = __wake_caller;
+	req->args.fn.file_op = __blobfs2_wake_caller;
 	channel->send_request(__blobfs2_barrier_cb, req);
 	sem_wait(&channel->sem);
 	blobfs2_free_fs_request(req);
@@ -3501,8 +3513,9 @@ static void __blobfs2_drop_cache(struct spdk_file * file)
 				g_dmasize -= CACHE_BUFFER_SIZE;
 			}
 		}
+		spdk_tree_free_buffers(file->tree);
+		file->tree = NULL;
 	}
-	spdk_tree_free_buffers(file->tree);
 }
 
 static void __blobfs2_delete_file_done(void * _args, int bserrno)
@@ -3513,11 +3526,11 @@ static void __blobfs2_delete_file_done(void * _args, int bserrno)
 	args->rc = bserrno;
 
 	if (bserrno == 0) {
+		__blobfs2_drop_cache(file);
 		free(file->name);
 		free(file->tree);
 		free(file);
 		TAILQ_REMOVE(&file->fs->files, file, tailq);
-		__blobfs2_drop_cache(file);
 	}
 	sem_post(args->sem);
 }
@@ -3579,6 +3592,53 @@ int blobfs2_delete_file(struct spdk_filesystem *fs, struct spdk_io_channel *_cha
 	args->op.delete.name = name;
 	args->sem = &channel->sem;
 	fs->send_request(__blobfs2_delete_file_cb, req);
+	sem_wait(&channel->sem);
+	rc = args->rc;
+	blobfs2_free_fs_request(req);
+
+	return rc;
+}
+
+static void __blobfs2_access_cb(void * _args)
+{
+	struct spdk_fs_request * req = _args;
+	struct spdk_fs_cb_args * args = &req->args;
+	const char * name = args->op.blobfs2_access.name;
+	int mode = args->op.blobfs2_access.mode;
+	struct spdk_file * file;
+
+	if (strnlen(name, SPDK_FILE_NAME_MAX + 1) == SPDK_FILE_NAME_MAX + 1) {
+		__blobfs2_delete_file_done(req, -ENAMETOOLONG);
+		return;
+	}
+
+	file = fs_find_file(args->fs, name);
+	if (mode & F_OK && file && !file->is_deleted) {
+		args->rc = 0;
+	} else {
+		args->rc = -1;
+	}
+	sem_post(args->sem);
+}
+
+int blobfs2_access(struct spdk_filesystem * fs, struct spdk_io_channel * _channel, const char * path, int mode)
+{
+	struct spdk_fs_channel *channel = spdk_io_channel_get_ctx(_channel);
+	struct spdk_fs_request *req;
+	struct spdk_fs_cb_args *args;
+	int rc;
+
+	req = blobfs2_alloc_fs_request(channel);
+	if (req == NULL) {
+		return -ENOMEM;
+	}
+
+	args = &req->args;
+	args->fs = fs;
+	args->op.blobfs2_access.name = path;
+	args->op.blobfs2_access.mode = mode;
+	args->sem = &channel->sem;
+	fs->send_request(__blobfs2_access_cb, req);
 	sem_wait(&channel->sem);
 	rc = args->rc;
 	blobfs2_free_fs_request(req);

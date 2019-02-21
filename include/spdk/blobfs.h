@@ -420,6 +420,8 @@ int blobfs2_sync(struct spdk_file *file, struct spdk_io_channel *channel);
  */
 int spdk_file_get_id(struct spdk_file *file, void *id, size_t size);
 
+int blobfs2_access(struct spdk_filesystem *fs, struct spdk_io_channel * _channel, const char * path, int mode);
+
 #ifdef __cplusplus
 }
 #endif

@@ -176,6 +176,7 @@ static struct real_fsiface {
     int (*truncate64)(const char *, off_t);
     int (*ftruncate64)(int, off_t);
     int (*pthread_create)(pthread_t * thread, const pthread_attr_t * attr, void * (*start)(void *), void * arg);
+    int (*access)(const char *, int);
 } realfs = {.initialized = 0};
 
 
@@ -1768,3 +1769,13 @@ int ftruncate64(int fd, off_t length) {
     return realfs.ftruncate64(fd, length);
 }
 
+int access(const char * path, int mode) {
+    char abspath[PATH_MAX];
+    if (!realfs.access) {
+        realfs.access = load_symbol(("access"));
+    }
+    if (realfs.initialized > 0 && !normalizepath(path, abspath) && hookfs_is_under_mountpoint(abspath)) {
+        return blobfs2_access(abspath, mode);
+    }
+    return realfs.access(path, mode);
+}
