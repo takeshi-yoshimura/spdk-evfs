@@ -2776,6 +2776,8 @@ static struct spdk_fs_request * blobfs2_alloc_fs_request(struct spdk_fs_channel 
 	req = calloc(1, sizeof(*req));
 	if (req) {
 		req->args.from_request = false;
+		memset(req, 0, sizeof(*req));
+		req->channel = channel;
 		return req;
 	}
 	return NULL;
@@ -2890,7 +2892,8 @@ static void __blobfs2_resize_done(void *_args, int bserrno) {
 	if (bserrno == 0) {
 		args->file->length = args->op.blobfs2_rw.offset + args->op.blobfs2_rw.length;
 	}
-	args->fn.resize_op(_args, bserrno);
+	args->rc = 0;
+	sem_post(args->sem);
 	__blobfs2_resubmit_op_after_resize(req);
 }
 
@@ -2915,7 +2918,8 @@ static void __blobfs2_resize_cb(void * _args)
 	} else {
 		// no need to expand blob. update in-memory metadata only
 		file->length = new_length;
-		args->fn.resize_op(_args, 0);
+		args->rc = 0;
+		sem_post(args->sem);
 	}
 }
 
@@ -2933,7 +2937,6 @@ int blobfs2_truncate(struct spdk_file * file, struct spdk_io_channel * _channel,
 	req->args.sem = &channel->sem;
 	req->args.op.blobfs2_rw.offset = 0;
 	req->args.op.blobfs2_rw.length = length;
-	req->args.fn.resize_op = __blobfs2_wake_caller;
 	channel->send_request(__blobfs2_resize_cb, req);
 	sem_wait(&channel->sem);
 	blobfs2_free_fs_request(req);
@@ -3021,18 +3024,40 @@ static void __blobfs2_flush_buffer_blob(void * _args)
 static void __blobfs2_buffered_blob_resize_done(void * _args, int bserrno)
 {
 	struct spdk_fs_request * req = _args;
-	req->args.fn.resize_op = NULL;
+	struct spdk_fs_cb_args * args = &req->args;
+
 	if (bserrno) {
 		__blobfs2_rw_last(req->args.op.blobfs2_rw.buffer, _args, bserrno);
 	} else {
+		args->file->length = args->op.blobfs2_rw.offset + args->op.blobfs2_rw.length;
 		__blobfs2_flush_buffer_blob(req);
 	}
+	__blobfs2_resubmit_op_after_resize(req);
 }
 
 static void __blobfs2_flush_buffer(void * _args)
 {
-	((struct spdk_fs_request *)_args)->args.fn.resize_op = __blobfs2_buffered_blob_resize_done;
-	__blobfs2_resize_cb(_args);
+	struct spdk_fs_request * req = _args;
+	struct spdk_fs_cb_args * args = &req->args;
+	struct spdk_file *file = args->file;
+	uint64_t nr_clusters = spdk_blob_get_num_clusters(file->blob);
+	uint64_t new_length = args->op.blobfs2_rw.offset + args->op.blobfs2_rw.length;
+	uint64_t new_nr_clusters = __bytes_to_clusters(new_length, file->fs->bs_opts.cluster_sz);
+
+	if (__blobfs2_blob_is_resizing(file)) {
+		// resize is in-processing. postpone this request after the resize to avoid -EBUSY
+		args->delayed_fn.resize_op = __blobfs2_flush_buffer;
+		TAILQ_INSERT_TAIL(&file->resize_waiter, req, args.op.blobfs2_rw.resize_tailq);
+		return;
+	}
+
+	if (new_nr_clusters != nr_clusters) {
+		spdk_blob_resize(file->blob, new_nr_clusters, __blobfs2_buffered_blob_resize_done, req);
+	} else {
+		// no need to expand blob. update in-memory metadata only
+		file->length = new_length;
+		__blobfs2_flush_buffer_blob(_args);
+	}
 }
 
 static void __blobfs2_rw_copy_buffer(void * _args, int bserrno)
@@ -3205,18 +3230,40 @@ static void __blobfs2_write_direct_blob(void * _args)
 static void __blobfs2_write_direct_blob_resize_done(void * _args, int bserrno)
 {
 	struct spdk_fs_request * req = _args;
-	req->args.fn.resize_op = NULL;
+	struct spdk_fs_cb_args * args = &req->args;
+
 	if (bserrno) {
 		__blobfs2_rw_last(NULL, _args, bserrno);
 	} else {
+		args->file->length = args->op.blobfs2_rw.offset + args->op.blobfs2_rw.length;
 		__blobfs2_write_direct_blob(_args);
 	}
+	__blobfs2_resubmit_op_after_resize(req);
 }
 
 static void __blobfs2_write_direct(void * _args)
 {
-	((struct spdk_fs_request *)_args)->args.fn.resize_op = __blobfs2_write_direct_blob_resize_done;
-	__blobfs2_resize_cb(_args);
+	struct spdk_fs_request * req = _args;
+	struct spdk_fs_cb_args * args = &req->args;
+	struct spdk_file *file = args->file;
+	uint64_t nr_clusters = spdk_blob_get_num_clusters(file->blob);
+	uint64_t new_length = args->op.blobfs2_rw.offset + args->op.blobfs2_rw.length;
+	uint64_t new_nr_clusters = __bytes_to_clusters(new_length, file->fs->bs_opts.cluster_sz);
+
+	if (__blobfs2_blob_is_resizing(file)) {
+		// resize is in-processing. postpone this request after the resize to avoid -EBUSY
+		args->delayed_fn.resize_op = __blobfs2_write_direct;
+		TAILQ_INSERT_TAIL(&file->resize_waiter, req, args.op.blobfs2_rw.resize_tailq);
+		return;
+	}
+
+	if (new_nr_clusters != nr_clusters) {
+		spdk_blob_resize(file->blob, new_nr_clusters, __blobfs2_write_direct_blob_resize_done, req);
+	} else {
+		// no need to expand blob. update in-memory metadata only
+		file->length = new_length;
+		__blobfs2_write_direct_blob(_args);
+	}
 }
 
 static void __blobfs2_read_direct(void * _args)

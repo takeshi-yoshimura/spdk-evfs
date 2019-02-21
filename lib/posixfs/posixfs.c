@@ -212,13 +212,17 @@ init_cb(void *ctx, struct spdk_filesystem *fs, int fserrno)
     spdk_event_call(event);
 }
 
+static __thread int g_nr_events = 0;
+
 static void
 __call_fn(void *arg1, void *arg2)
 {
     fs_request_fn fn;
 
+    ++g_nr_events;
     fn = (fs_request_fn)arg1;
     fn(arg2);
+    --g_nr_events;
 }
 
 static void
