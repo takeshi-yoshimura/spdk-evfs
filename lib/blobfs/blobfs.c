@@ -2700,6 +2700,8 @@ static TAILQ_HEAD(, spdk_fs_request) g_evict_waiter;
 
 static void init_blobfs2(void) {
 	g_page_size = sysconf(_SC_PAGESIZE);
+	g_nr_buffers = 0;
+	g_nr_dirties = 0;
 	TAILQ_INIT(&g_evict_waiter);
 	if (CACHE_BUFFER_SIZE < g_page_size) {
 		SPDK_WARNLOG("CacheBufferShift should be larger than page shift for this platform. This hurts Blobfs2 performance\n");
