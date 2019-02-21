@@ -2728,11 +2728,15 @@ static struct cache_buffer * blobfs2_alloc_buffer(struct spdk_file * file)
 	}
 
 	if (!dma) {
-		buf = TAILQ_FIRST(&file->zeroref_caches);
+		TAILQ_FOREACH(buf, &file->zeroref_caches, zeroref_tailq) {
+			if (!buf->dirty) {
+				TAILQ_REMOVE(&file->zeroref_caches, buf, zeroref_tailq);
+				break;
+			}
+		}
 		if (!buf) {
 			return NULL;
 		}
-		TAILQ_REMOVE(&file->zeroref_caches, buf, zeroref_tailq);
 		// TODO: lookup other files through g_caches if no zeroref cache
 	} else {
 		buf = calloc(1, sizeof(*buf));
@@ -2774,7 +2778,7 @@ static void blobfs2_buffer_up(struct spdk_file * file, struct cache_buffer * buf
 static void blobfs2_put_buffer(struct spdk_file * file, struct cache_buffer * buffer)
 {
 	assert(!buffer->in_progress);
-    if (--buffer->ref == 0 && !buffer->dirty) {
+    if (--buffer->ref == 0) {
 		TAILQ_INSERT_TAIL(&file->zeroref_caches, buffer, zeroref_tailq);
     }
 }
