@@ -2882,8 +2882,8 @@ static void __blobfs2_resubmit_op_after_resize(struct spdk_fs_request *req)
 {
     while (!TAILQ_EMPTY(&req->args.file->resize_waiter)) {
 		struct spdk_fs_request * dreq = TAILQ_FIRST(&req->args.file->resize_waiter);
+		dreq->args.delayed_fn.resize_op(dreq);
 		TAILQ_REMOVE(&req->args.file->resize_waiter, dreq, args.op.blobfs2_rw.resize_tailq);
-		req->channel->send_request(dreq->args.delayed_fn.resize_op, dreq);
     }
 }
 
@@ -2990,7 +2990,7 @@ static void __blobfs2_rw_last(struct cache_buffer *buffer, struct spdk_fs_reques
         // resubmit delayed reads/writes
         while (!TAILQ_EMPTY(&buffer->write_waiter)) {
         	struct spdk_fs_request * dreq = TAILQ_FIRST(&buffer->write_waiter);
-			req->channel->send_request(dreq->args.delayed_fn.write_op, dreq);
+			dreq->args.delayed_fn.write_op(dreq);
         	TAILQ_REMOVE(&buffer->write_waiter, dreq, args.op.blobfs2_rw.write_tailq);
         }
     }
@@ -3015,7 +3015,7 @@ static void __blobfs2_buffer_flush_done(void * _args, int bserrno)
 		--g_nr_dirties;
         TAILQ_REMOVE(&file->dirty_buffers, buffer, dirty_tailq);
 
-		while (!TAILQ_EMPTY(&g_evict_waiter)) {
+		if (!TAILQ_EMPTY(&g_evict_waiter)) {
 			struct spdk_fs_request * dreq = TAILQ_FIRST(&g_evict_waiter);
 			req->channel->send_request(dreq->args.delayed_fn.write_op, dreq);
 			TAILQ_REMOVE(&g_evict_waiter, dreq, args.op.blobfs2_rw.evict_tailq);
