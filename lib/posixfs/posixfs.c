@@ -1775,7 +1775,7 @@ int access(const char * path, int mode) {
         realfs.access = load_symbol(("access"));
     }
     if (realfs.initialized > 0 && !normalizepath(path, abspath) && hookfs_is_under_mountpoint(abspath)) {
-        return blobfs2_access(abspath, mode);
+        return blobfs2_access(g_fs, g_channel, abspath, mode);
     }
     return realfs.access(path, mode);
 }

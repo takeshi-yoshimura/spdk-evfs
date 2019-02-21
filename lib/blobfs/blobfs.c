@@ -2722,6 +2722,7 @@ static struct cache_buffer * blobfs2_alloc_buffer(struct spdk_file * file)
 			return NULL;
 		}
 		TAILQ_REMOVE(&file->zeroref_caches, buf, zeroref_tailq);
+		// TODO: lookup other files through g_caches if no zeroref cache
 	} else {
 		buf = calloc(1, sizeof(*buf));
 		if (!buf) {
@@ -3140,6 +3141,9 @@ static void __blobfs2_rw_buffered(void * _args)
 		if (len > CACHE_BUFFER_SIZE) {
 			len = CACHE_BUFFER_SIZE;
 		}
+		if (args->op.blobfs2_rw.is_read) {
+			buffer->buf_size = len;
+		}
 		__get_page_parameters(file, buffer_offset, len, &start_lba, &lba_size, &num_lba);
 		spdk_blob_io_read(args->file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
 						  buffer->buf + (start_lba * lba_size) - buffer_offset, start_lba, num_lba, __blobfs2_rw_copy_buffer, req);
@@ -3500,22 +3504,23 @@ int blobfs2_close(struct spdk_file * file, struct spdk_io_channel * _channel)
 
 static void __blobfs2_drop_cache(struct spdk_file * file)
 {
-	if (file->tree->present_mask != 0) {
-		uint64_t off;
-		TAILQ_REMOVE(&g_caches, file, cache_tailq);
-		if (file->tree->present_mask != 0) {
-			TAILQ_INSERT_TAIL(&g_caches, file, cache_tailq);
-		}
-		for (off = 0; off < file->length; off++) {
-			struct cache_buffer * buffer = spdk_tree_find_buffer(file->tree, off);
-			if (buffer) {
-				spdk_dma_free(buffer->buf);
-				g_dmasize -= CACHE_BUFFER_SIZE;
-			}
-		}
-		spdk_tree_free_buffers(file->tree);
-		file->tree = NULL;
+	uint64_t off;
+	if (file->tree->present_mask == 0) {
+		return;
 	}
+	for (off = 0; off < file->length; off += CACHE_BUFFER_SIZE) {
+		struct cache_buffer * buffer = spdk_tree_find_buffer(file->tree, off);
+		if (buffer) {
+			spdk_dma_free(buffer->buf);
+			g_dmasize -= CACHE_BUFFER_SIZE;
+		}
+	}
+	spdk_tree_free_buffers(file->tree);
+	TAILQ_REMOVE(&g_caches, file, cache_tailq);
+	if (file->tree->present_mask != 0) {
+		TAILQ_INSERT_TAIL(&g_caches, file, cache_tailq);
+	}
+	file->last = NULL;
 }
 
 static void __blobfs2_delete_file_done(void * _args, int bserrno)
