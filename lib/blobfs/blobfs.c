@@ -3135,17 +3135,20 @@ static void __blobfs2_rw_buffered(void * _args)
 	if (file->length < blob_size) {
 		blob_size = file->length;
 	}
+
 	if (buffer_offset < blob_size) {
 		// fetch on-disk data
-		uint64_t len = length;
-		if (len > blob_size - buffer_offset) {
+		uint64_t len;
+		if (args->op.blobfs2_rw.is_read) {
+			len = blob_size;
+		} else {
+			len = length;
+		}
+		if (buffer_offset + len > blob_size) {
 			len = blob_size - buffer_offset;
 		}
 		if (len > CACHE_BUFFER_SIZE) {
 			len = CACHE_BUFFER_SIZE;
-		}
-		if (args->op.blobfs2_rw.is_read) {
-			buffer->buf_size = len;
 		}
 		__get_page_parameters(file, buffer_offset, len, &start_lba, &lba_size, &num_lba);
 		spdk_blob_io_read(args->file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
