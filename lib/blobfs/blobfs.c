@@ -2947,6 +2947,10 @@ static void __blobfs2_rw_last(struct cache_buffer *buffer, struct spdk_fs_reques
 	struct spdk_fs_cb_args * args = &req->args;
     struct spdk_fs_request * head;
 
+    if (buffer) {
+    	buffer->in_progress = false;
+    }
+
     if (!args->op.blobfs2_rw.is_read) {
 		free(args->op.blobfs2_rw.user_buf);
 		args->op.blobfs2_rw.user_buf = NULL;
@@ -2960,7 +2964,6 @@ static void __blobfs2_rw_last(struct cache_buffer *buffer, struct spdk_fs_reques
     }
 
     if (buffer) {
-        buffer->in_progress = false;
         blobfs2_put_buffer(file, buffer);
         // resubmit delayed reads/writes
         while (!TAILQ_EMPTY(&buffer->write_waiter)) {
@@ -3009,7 +3012,7 @@ static void __blobfs2_flush_buffer_blob(void * _args)
 	    return;
 	}
     buffer->in_progress = true;
-    __get_page_parameters(file, buffer_offset, CACHE_BUFFER_SIZE, &start_lba, &lba_size, &num_lba);
+    __get_page_parameters(file, buffer_offset, buffer->buf_size, &start_lba, &lba_size, &num_lba);
     spdk_blob_io_write(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
                        buffer->buf + (start_lba * lba_size) - buffer_offset,
                        start_lba, num_lba, __blobfs2_buffer_flush_done, req);
