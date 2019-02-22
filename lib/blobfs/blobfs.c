@@ -3315,7 +3315,7 @@ static void __blobfs2_write_direct_blob(void * _args)
 					   start_lba, num_lba, __blobfs2_rw_direct_done, req);
 }
 
-static void __blobfs2_write_direct_check_resize(void * _args);
+static void __blobfs2_write_direct(void * _args);
 
 static void __blobfs2_write_direct_blob_resize_done(void * _args, int bserrno)
 {
@@ -3331,11 +3331,11 @@ static void __blobfs2_write_direct_blob_resize_done(void * _args, int bserrno)
     if (!TAILQ_EMPTY(&req->args.file->resize_waiter)) {
         struct spdk_fs_request * dreq = TAILQ_FIRST(&req->args.file->resize_waiter);
         TAILQ_REMOVE(&req->args.file->resize_waiter, dreq, args.op.blobfs2_rw.resize_tailq);
-        __blobfs2_write_direct_check_resize(dreq);
+        __blobfs2_write_direct(dreq);
     }
 }
 
-static void __blobfs2_write_direct_check_resize(void * _args)
+static void __blobfs2_write_direct(void * _args)
 {
 	struct spdk_fs_request * req = _args;
 	struct spdk_fs_cb_args * args = &req->args;
@@ -3346,7 +3346,7 @@ static void __blobfs2_write_direct_check_resize(void * _args)
 
 	if (__blobfs2_blob_is_resizing(file)) {
 		// resize is in-processing. postpone this request after the resize to avoid -EBUSY
-		args->delayed_fn.resize_op = __blobfs2_write_direct_check_resize;
+		args->delayed_fn.resize_op = __blobfs2_write_direct;
 		TAILQ_INSERT_TAIL(&file->resize_waiter, req, args.op.blobfs2_rw.resize_tailq);
 		return;
 	}
