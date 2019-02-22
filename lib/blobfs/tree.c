@@ -130,7 +130,7 @@ spdk_tree_remove_buffer(struct cache_tree *tree, struct cache_buffer *buffer)
 		assert(buffer == tree->u.buffer[index]);
 		tree->present_mask &= ~(1ULL << index);
 		tree->u.buffer[index] = NULL;
-		spdk_cache_buffer_free(buffer);
+//		spdk_cache_buffer_free(buffer);
 		return;
 	}
 
@@ -160,7 +160,7 @@ spdk_tree_free_buffers(struct cache_tree *tree)
 			buffer = tree->u.buffer[i];
 			if (buffer != NULL && buffer->in_progress == false &&
 			    buffer->bytes_filled == buffer->bytes_flushed) {
-				spdk_cache_buffer_free(buffer);
+//				spdk_cache_buffer_free(buffer);
 				tree->u.buffer[i] = NULL;
 				tree->present_mask &= ~(1ULL << i);
 			}

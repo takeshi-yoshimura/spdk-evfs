@@ -2701,14 +2701,33 @@ static uint64_t g_page_size;
 static uint64_t g_nr_buffers;
 static uint64_t g_nr_dirties;
 static TAILQ_HEAD(, spdk_fs_request) g_evict_waiter;
+static TAILQ_HEAD(, cache_buffer) g_blank_buffer;
 
 static void init_blobfs2(void) {
+
 	g_page_size = sysconf(_SC_PAGESIZE);
 	g_nr_buffers = 0;
 	g_nr_dirties = 0;
 	TAILQ_INIT(&g_evict_waiter);
 	if (CACHE_BUFFER_SIZE < g_page_size) {
 		SPDK_WARNLOG("CacheBufferShift should be larger than page shift for this platform. This hurts Blobfs2 performance\n");
+	}
+
+	while (g_dmasize < g_fs_cache_size) {
+		struct cache_buffer * buf = calloc(1, sizeof(struct cache_buffer));
+		if (!buf) {
+			SPDK_WARNLOG("calloc failed during Blobfs initialization\n");
+			break;
+		}
+		buf->buf = spdk_dma_malloc(CACHE_BUFFER_SIZE, g_page_size, NULL);
+		if (buf->buf) {
+			g_dmasize += CACHE_BUFFER_SIZE;
+			TAILQ_INSERT_TAIL(&g_blank_buffer, buf, zeroref_tailq);
+		} else {
+			free(buf);
+			SPDK_WARNLOG("spdk_dma_malloc failed during Blobfs initialization. should assign larger memory to the SPDK app\n");
+			break;
+		}
 	}
 }
 
@@ -2723,21 +2742,13 @@ static void __blobfs2_wake_caller(void * _args, int rc)
 static long t_alloc_buffer = 0;
 static struct cache_buffer * blobfs2_alloc_buffer(struct spdk_file * file)
 {
-	struct cache_buffer *buf;
-	void * dma = NULL;
+	struct cache_buffer * buf;
 	struct timespec t, t2;
 	long n;
 	clock_gettime(CLOCK_MONOTONIC, &t);
 
-	if (g_dmasize < g_fs_cache_size) {
-//		uint64_t align = spdk_bs_get_io_unit_size(bs);
-		dma = spdk_dma_malloc(CACHE_BUFFER_SIZE, g_page_size, NULL);
-		if (dma) {
-			g_dmasize += CACHE_BUFFER_SIZE;
-		}
-	}
-
-	if (!dma) {
+	buf = TAILQ_FIRST(&g_blank_buffer);
+	if (!buf) {
 		TAILQ_FOREACH(buf, &file->zeroref_caches, zeroref_tailq) {
 			if (!buf->dirty) {
 				TAILQ_REMOVE(&file->zeroref_caches, buf, zeroref_tailq);
@@ -2749,19 +2760,12 @@ static struct cache_buffer * blobfs2_alloc_buffer(struct spdk_file * file)
 		}
 		// TODO: lookup other files through g_caches if no zeroref cache
 	} else {
-		buf = calloc(1, sizeof(*buf));
-		if (!buf) {
-			if (dma) {
-				spdk_dma_free(dma);
-			}
-			return NULL;
-		}
-		buf->buf = dma;
+		TAILQ_REMOVE(&g_blank_buffer, buf, zeroref_tailq);
 	}
 
 	buf->buf_size = 0;
 	buf->ref = 1;
-	memset(buf->buf, 0, CACHE_BUFFER_SIZE);
+//	memset(buf->buf, 0, CACHE_BUFFER_SIZE); // > 20usec. too slow
     TAILQ_INIT(&buf->write_waiter);
 
     ++g_nr_buffers;
@@ -3338,6 +3342,8 @@ static void __blobfs2_rw_buffered(void * _args)
 		}
 		if (len > CACHE_BUFFER_SIZE) {
 			len = CACHE_BUFFER_SIZE;
+		} else if (len < CACHE_BUFFER_SIZE) {
+			memset(buffer->buf, len, CACHE_BUFFER_SIZE - len);
 		}
 		__get_page_parameters(file, buffer_offset, len, &start_lba, &lba_size, &num_lba);
 		spdk_blob_io_read(args->file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
@@ -3754,7 +3760,7 @@ static void __blobfs2_drop_cache(struct spdk_file * file)
 	for (off = 0; off < file->length; off += CACHE_BUFFER_SIZE) {
 		struct cache_buffer * buffer = spdk_tree_find_buffer(file->tree, off);
 		if (buffer) {
-			spdk_dma_free(buffer->buf);
+			TAILQ_INSERT_TAIL(&g_blank_buffer, buffer, zeroref_tailq);
 			g_dmasize -= CACHE_BUFFER_SIZE;
 		}
 	}
