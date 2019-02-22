@@ -3033,12 +3033,6 @@ static void __blobfs2_flush_buffer_blob(void * _args)
 	uint32_t lba_size;
 	uint64_t buffer_offset = offset - offset % CACHE_BUFFER_SIZE;
 
-	if (!buffer || !buffer->dirty || buffer->in_progress) {
-		// no need to flush
-		__blobfs2_rw_last(buffer, req, 0);
-	    return;
-	}
-    buffer->in_progress = true;
     __get_page_parameters(file, buffer_offset, buffer->buf_size, &start_lba, &lba_size, &num_lba);
     spdk_blob_io_write(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
                        buffer->buf + (start_lba * lba_size) - buffer_offset,
@@ -3059,7 +3053,7 @@ static void __blobfs2_buffered_blob_resize_done(void * _args, int bserrno)
 	__blobfs2_resubmit_op_after_resize(req);
 }
 
-static void __blobfs2_flush_buffer(void * _args)
+static void __blobfs2_flush_buffer_check_resize(void * _args)
 {
 	struct spdk_fs_request * req = _args;
 	struct spdk_fs_cb_args * args = &req->args;
@@ -3070,7 +3064,7 @@ static void __blobfs2_flush_buffer(void * _args)
 
 	if (__blobfs2_blob_is_resizing(file)) {
 		// resize is in-processing. postpone this request after the resize to avoid -EBUSY
-		args->delayed_fn.resize_op = __blobfs2_flush_buffer;
+		args->delayed_fn.resize_op = __blobfs2_flush_buffer_check_resize;
 		TAILQ_INSERT_TAIL(&file->resize_waiter, req, args.op.blobfs2_rw.resize_tailq);
 		return;
 	}
@@ -3082,6 +3076,19 @@ static void __blobfs2_flush_buffer(void * _args)
 		file->length = new_length;
 		__blobfs2_flush_buffer_blob(_args);
 	}
+}
+
+static void __blobfs2_flush_buffer(void * _args)
+{
+    struct spdk_fs_request * req = _args;
+    struct cache_buffer * buffer = req->args.op.blobfs2_rw.buffer;
+    if (!buffer || !buffer->dirty || buffer->in_progress) {
+        // no need to flush
+        __blobfs2_rw_last(buffer, req, 0);
+        return;
+    }
+    buffer->in_progress = true;
+    __blobfs2_flush_buffer_check_resize(_args);
 }
 
 static void __blobfs2_rw_copy_buffer(void * _args, int bserrno)
