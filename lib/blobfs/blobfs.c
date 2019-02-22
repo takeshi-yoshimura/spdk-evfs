@@ -2720,10 +2720,14 @@ static void __blobfs2_wake_caller(void * _args, int rc)
 	sem_post(req->args.sem);
 }
 
+static long t_alloc_buffer = 0;
 static struct cache_buffer * blobfs2_alloc_buffer(struct spdk_file * file)
 {
 	struct cache_buffer *buf;
 	void * dma = NULL;
+	struct timespec t, t2;
+	long n;
+	clock_gettime(CLOCK_MONOTONIC, &t);
 
 	if (g_dmasize < g_fs_cache_size) {
 //		uint64_t align = spdk_bs_get_io_unit_size(bs);
@@ -2761,6 +2765,11 @@ static struct cache_buffer * blobfs2_alloc_buffer(struct spdk_file * file)
     TAILQ_INIT(&buf->write_waiter);
 
     ++g_nr_buffers;
+	clock_gettime(CLOCK_MONOTONIC, &t2);
+	n = (t2.tv_sec - t.tv_sec) * 1000 * 1000 * 1000 + (t2.tv_nsec - t.tv_nsec);
+	if (n > t_alloc_buffer) {
+		t_alloc_buffer = n;
+	}
 	return buf;
 }
 
@@ -2789,20 +2798,9 @@ static void blobfs2_put_buffer(struct spdk_file * file, struct cache_buffer * bu
     }
 }
 
-static struct spdk_fs_request * prev_req = NULL; //for tracing
-
 static struct spdk_fs_request * blobfs2_alloc_fs_request(struct spdk_fs_channel * channel)
 {
-	struct spdk_fs_request * req;
-	if (prev_req) {
-		free(prev_req->args.funcs);
-		if (prev_req->args.from_request) {
-			free_fs_request(prev_req);
-		} else {
-			free(prev_req);
-		}
-	}
-	req = alloc_fs_request(channel);
+	struct spdk_fs_request * req = alloc_fs_request(channel);
 	if (req) {
 		req->args.from_request = true;
 		req->args.funcs = calloc(1, sizeof(void *) * 128);
@@ -2819,12 +2817,24 @@ static struct spdk_fs_request * blobfs2_alloc_fs_request(struct spdk_fs_channel 
 	return NULL;
 }
 
+static void * g_funcs[4096];
+static int g_nr_funcs = 0;
+
 static void blobfs2_free_fs_request(struct spdk_fs_request * req)
 {
 	if (!req) {
 		return;
 	}
-	prev_req = req;
+
+	while (req->args.nr_funcs-- > 0) {
+		g_funcs[g_nr_funcs++ % 4096] = req->args.funcs[req->args.nr_funcs--];
+	}
+    free(req->args.funcs);
+	if (req->args.from_request) {
+		free_fs_request(req);
+	} else {
+		free(req);
+	}
 }
 
 static void __blobfs2_record_func(struct spdk_fs_request * req, void * func, void * arg)
@@ -3183,6 +3193,7 @@ static void __blobfs2_rw_copy_buffer(void * _args, int bserrno)
 	__blobfs2_rw_last(buffer, req, 0);
 }
 
+static long t_evict_cache = 0;
 static int blobfs2_evict_cache(void * _args)
 {
 	struct spdk_fs_request * req = _args;
@@ -3190,7 +3201,10 @@ static int blobfs2_evict_cache(void * _args)
 	struct spdk_file * file = args->file;
 	struct cache_buffer * buffer;
 	uint64_t nr_evict;
+	long n;
+	struct timespec t, t2;
 
+	clock_gettime(CLOCK_MONOTONIC, &t);
     __blobfs2_record_func(req, blobfs2_evict_cache, _args);
 
 	if (g_nr_buffers < 10 || g_nr_dirties * 100 < g_nr_buffers * g_dirty_ratio) {
@@ -3227,6 +3241,11 @@ static int blobfs2_evict_cache(void * _args)
 		if (--nr_evict <= 0) {
 			break;
 		}
+	}
+	clock_gettime(CLOCK_MONOTONIC, &t2);
+	n = (t2.tv_sec - t.tv_sec) * 1000 * 1000 * 1000 + (t2.tv_nsec - t.tv_nsec);
+	if (n < t_evict_cache) {
+		t_evict_cache = n;
 	}
 	return 0;
 }
@@ -3870,15 +3889,12 @@ int blobfs2_access(struct spdk_filesystem * fs, struct spdk_io_channel * _channe
 	return rc;
 }
 
-void blobfs2_dump_request(void * args)
+void blobfs2_dump_request()
 {
-	struct spdk_fs_request * req = args;
 	int i;
-	struct timespec t;
-	clock_gettime(CLOCK_MONOTONIC, &t);
-	SPDK_ERRLOG("time (nsec): %ld\n", ((t.tv_sec - req->args.submitted.tv_sec) * 1000 * 1000 * 1000) + (t.tv_nsec - req->args.submitted.tv_nsec));
-	for (i = 0; i < req->args.nr_funcs / 2; i++) {
-		SPDK_ERRLOG("func[%d]: %p, %p\n", i, req->args.funcs[i * 2], req->args.funcs[i * 2 + 1]);
+	SPDK_ERRLOG("t_evict = %ld, alloc = %ld\n", t_evict_cache, t_alloc_buffer);
+	for (i = 0; i < 4096; i++) {
+		SPDK_ERRLOG("[%d]: %p\n", i, g_funcs[(g_nr_funcs - i) % 4096]);
 	}
 }
 
