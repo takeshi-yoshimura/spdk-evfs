@@ -215,6 +215,7 @@ init_cb(void *ctx, struct spdk_filesystem *fs, int fserrno)
 #include <time.h>
 static long longest = 0;
 static void * func = NULL;
+static void * arg = NULL;
 
 static void
 __call_fn(void *arg1, void *arg2)
@@ -231,6 +232,7 @@ __call_fn(void *arg1, void *arg2)
     if (nano > longest) {
         longest = nano;
         func = fn;
+        arg = arg2;
     }
 }
 
