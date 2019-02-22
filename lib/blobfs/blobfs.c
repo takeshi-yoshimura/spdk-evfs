@@ -3474,7 +3474,7 @@ static int64_t blobfs2_rw(struct spdk_file *file, struct spdk_io_channel * _chan
 	req->args.op.blobfs2_rw.is_read = is_read;
 	req->args.op.blobfs2_rw.delayed = false;
 	req->args.fn.file_op = NULL;
-	req->args.op.blobfs2_rw.user_buf = is_read ? payload: user_buf;
+	req->args.op.blobfs2_rw.user_buf = waitrc ? payload: user_buf;
 	req->args.op.blobfs2_rw.need_free_ubuf = waitrc;
 	req->args.sem = waitrc ? &channel->sem: NULL;
 
