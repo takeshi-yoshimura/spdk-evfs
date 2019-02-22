@@ -209,6 +209,7 @@ struct spdk_fs_cb_args {
 			int oflag;
             bool is_read;
             bool delayed;
+            bool need_free_ubuf;
             struct cache_buffer * buffer;
             TAILQ_ENTRY(spdk_fs_request) sync_tailq;
             TAILQ_ENTRY(spdk_fs_request) resize_tailq;
@@ -2972,17 +2973,21 @@ static void __blobfs2_rw_last(struct cache_buffer *buffer, struct spdk_fs_reques
         blobfs2_put_buffer(file, buffer);
     }
 
-    if (!args->op.blobfs2_rw.is_read) {
+    if (!args->op.blobfs2_rw.need_free_ubuf) {
 		free(args->op.blobfs2_rw.user_buf);
 		args->op.blobfs2_rw.user_buf = NULL;
     }
 
 	// for write barrier/sync
-	TAILQ_REMOVE(&file->sync_requests, req, args.op.blobfs2_rw.sync_tailq);
-	head = TAILQ_FIRST(&file->sync_requests);
-    if (head && head->args.fn.file_op) {
-		head->args.fn.file_op(head, rc);
-    }
+    TAILQ_REMOVE(&file->sync_requests, req, args.op.blobfs2_rw.sync_tailq);
+    do {
+        head = TAILQ_FIRST(&file->sync_requests);
+        if (head && head->args.fn.file_op) {
+            head->args.fn.file_op(head, rc);
+        } else {
+            break;
+        }
+    } while (true);
 
     // resubmit delayed reads/writes
     if (buffer && !TAILQ_EMPTY(&buffer->write_waiter)) {
@@ -3432,7 +3437,7 @@ static int64_t blobfs2_rw(struct spdk_file *file, struct spdk_io_channel * _chan
 	struct spdk_fs_request * req;
 	uint64_t align = spdk_bs_get_io_unit_size(file->fs->bs);
 	void * user_buf = NULL;
-	bool waitrc = (is_read || (oflag & (O_SYNC | O_DSYNC)));
+	bool waitrc = (is_read || (oflag & (O_SYNC | O_DSYNC | O_DIRECT)));
 
 	if (length == 0) {
 		return 0;
@@ -3447,7 +3452,7 @@ static int64_t blobfs2_rw(struct spdk_file *file, struct spdk_io_channel * _chan
 		return -EINVAL;
 	}
 
-	if (!is_read) {
+	if (!waitrc) {
 		// TODO: use copy-on-write for large length
 		user_buf = malloc(length);
 		if (!user_buf) {
@@ -3470,13 +3475,13 @@ static int64_t blobfs2_rw(struct spdk_file *file, struct spdk_io_channel * _chan
 	req->args.op.blobfs2_rw.delayed = false;
 	req->args.fn.file_op = NULL;
 	req->args.op.blobfs2_rw.user_buf = is_read ? payload: user_buf;
+	req->args.op.blobfs2_rw.need_free_ubuf = waitrc;
 	req->args.sem = waitrc ? &channel->sem: NULL;
 
 	channel->send_request(__blobfs2_rw_cb, req);
 	if (waitrc) {
 		sem_wait(&channel->sem);
 		blobfs2_free_fs_request(req);
-		return req->args.op.blobfs2_rw.length;
 	}
 
 	return is_read ? req->args.op.blobfs2_rw.length: 0; // terrible. original blobfs does this
