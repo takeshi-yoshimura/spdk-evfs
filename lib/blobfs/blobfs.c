@@ -144,8 +144,6 @@ struct spdk_fs_cb_args {
 	void *arg;
 	sem_t *sem;
 	struct timespec submitted;
-	void ** funcs;
-	int nr_funcs;
 	struct spdk_filesystem *fs;
 	struct spdk_file *file;
 	int rc;
@@ -2807,48 +2805,27 @@ static struct spdk_fs_request * blobfs2_alloc_fs_request(struct spdk_fs_channel 
 	struct spdk_fs_request * req = alloc_fs_request(channel);
 	if (req) {
 		req->args.from_request = true;
-		req->args.funcs = calloc(1, sizeof(void *) * 128);
 		return req;
 	}
 	req = calloc(1, sizeof(*req));
 	if (req) {
 		memset(req, 0, sizeof(*req));
-        req->args.funcs = calloc(1, sizeof(void *) * 128);
-		req->args.from_request = false;
 		req->channel = channel;
 		return req;
 	}
 	return NULL;
 }
 
-static void * g_funcs[4096];
-static int g_nr_funcs = 0;
-
 static void blobfs2_free_fs_request(struct spdk_fs_request * req)
 {
 	if (!req) {
 		return;
 	}
-
-	while (req->args.nr_funcs-- > 0) {
-		g_funcs[g_nr_funcs++ % 4096] = req->args.funcs[req->args.nr_funcs--];
-	}
-    free(req->args.funcs);
 	if (req->args.from_request) {
 		free_fs_request(req);
 	} else {
 		free(req);
 	}
-}
-
-static void __blobfs2_record_func(struct spdk_fs_request * req, void * func, void * arg)
-{
-    if (req->args.nr_funcs < 128) {
-        req->args.funcs[req->args.nr_funcs++] = func;
-        req->args.funcs[req->args.nr_funcs++] = arg;
-    } else {
-        SPDK_WARNLOG("too many func calls!\n");
-    }
 }
 
 static void __blobfs2_copy_stat(void *arg, struct spdk_file_stat *stat, int fserrno)
@@ -3005,8 +2982,6 @@ static void __blobfs2_rw_last(struct cache_buffer *buffer, struct spdk_fs_reques
     struct spdk_fs_request * head;
     struct timespec t;
 
-    __blobfs2_record_func(req, __blobfs2_rw_last, buffer);
-
     if (buffer) {
     	buffer->in_progress = false;
         blobfs2_put_buffer(file, buffer);
@@ -3055,8 +3030,6 @@ static void __blobfs2_buffer_flush_done(void * _args, int bserrno)
 	struct cache_buffer * buffer = args->op.blobfs2_rw.buffer;
 	struct spdk_file * file = args->file;
 
-    __blobfs2_record_func(req, __blobfs2_buffer_flush_done, _args);
-
 	if (bserrno == 0) {
         buffer->dirty = false;
 		--g_nr_dirties;
@@ -3084,8 +3057,6 @@ static void __blobfs2_flush_buffer_blob(void * _args)
 	uint32_t lba_size;
 	uint64_t buffer_offset = offset - offset % CACHE_BUFFER_SIZE;
 
-    __blobfs2_record_func(req, __blobfs2_flush_buffer_blob, _args);
-
     __get_page_parameters(file, buffer_offset, buffer->buf_size, &start_lba, &lba_size, &num_lba);
     spdk_blob_io_write(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
                        buffer->buf + (start_lba * lba_size) - buffer_offset,
@@ -3098,8 +3069,6 @@ static void __blobfs2_buffered_blob_resize_done(void * _args, int bserrno)
 {
 	struct spdk_fs_request * req = _args;
 	struct spdk_fs_cb_args * args = &req->args;
-
-    __blobfs2_record_func(req, __blobfs2_buffered_blob_resize_done, _args);
 
 	if (bserrno) {
 		struct cache_buffer * buffer = req->args.op.blobfs2_rw.buffer;
@@ -3125,8 +3094,6 @@ static void __blobfs2_flush_buffer_check_resize(void * _args)
 	uint64_t new_length = args->op.blobfs2_rw.offset + args->op.blobfs2_rw.length;
 	uint64_t new_nr_clusters = __bytes_to_clusters(new_length, file->fs->bs_opts.cluster_sz);
 
-    __blobfs2_record_func(req, __blobfs2_flush_buffer_check_resize, _args);
-
 	if (__blobfs2_blob_is_resizing(file)) {
 		// resize is in-processing. postpone this request after the resize to avoid -EBUSY
 		args->delayed_fn.resize_op = __blobfs2_flush_buffer_check_resize;
@@ -3146,8 +3113,6 @@ static void __blobfs2_flush_buffer(void * _args)
 {
     struct spdk_fs_request * req = _args;
     struct cache_buffer * buffer = req->args.op.blobfs2_rw.buffer;
-
-    __blobfs2_record_func(req, __blobfs2_flush_buffer, _args);
 
     if (!buffer || !buffer->dirty || buffer->in_progress) {
         // no need to flush
@@ -3169,8 +3134,6 @@ static void __blobfs2_rw_copy_buffer(void * _args, int bserrno)
     uint64_t offset = args->op.blobfs2_rw.offset;
     uint64_t length = args->op.blobfs2_rw.length;
     uint64_t buffer_offset = offset - offset % CACHE_BUFFER_SIZE;
-
-    __blobfs2_record_func(req, __blobfs2_rw_copy_buffer, _args);
 
     if (bserrno) {
         SPDK_ERRLOG("failed to fetch on-disk data : %d\n", bserrno);
@@ -3214,7 +3177,6 @@ static int blobfs2_evict_cache(void * _args)
 	struct timespec t, t2;
 
 	clock_gettime(CLOCK_MONOTONIC, &t);
-    __blobfs2_record_func(req, blobfs2_evict_cache, _args);
 
 	if (g_nr_buffers < 10 || g_nr_dirties * 100 < g_nr_buffers * g_dirty_ratio) {
 		return 0;
@@ -3273,8 +3235,6 @@ static void __blobfs2_rw_buffered(void * _args)
 	uint64_t start_lba, num_lba;
 	uint32_t lba_size;
 	uint64_t blob_size;
-
-    __blobfs2_record_func(req, __blobfs2_rw_buffered, _args);
 
 	if (blobfs2_evict_cache(req)) {
 		__blobfs2_rw_last(NULL, req, -ENOMEM);
@@ -3361,8 +3321,6 @@ static void __blobfs2_rw_direct_done(void * _args, int bserrno)
 	struct spdk_fs_cb_args * args = &req->args;
 	uint64_t length = args->op.blobfs2_rw.length;
 
-    __blobfs2_record_func(req, __blobfs2_rw_direct_done, _args);
-
     if (args->op.blobfs2_rw.is_read) {
 		memcpy(args->op.blobfs2_rw.user_buf, args->op.blobfs2_rw.pin_buf, length);
     }
@@ -3382,8 +3340,6 @@ static void __blobfs2_write_direct_blob(void * _args)
 	uint32_t lba_size;
 //	uint64_t align = spdk_bs_get_io_unit_size(file->fs->bs);
 	void * dma;
-
-    __blobfs2_record_func(req, __blobfs2_write_direct_blob, _args);
 
 	// we need to alloc temporal buffer to issue DMA
 	dma = spdk_dma_malloc(length, g_page_size, NULL);
@@ -3408,8 +3364,6 @@ static void __blobfs2_write_direct_blob_resize_done(void * _args, int bserrno)
 	struct spdk_fs_request * req = _args;
 	struct spdk_fs_cb_args * args = &req->args;
 
-    __blobfs2_record_func(req, __blobfs2_write_direct_blob_resize_done, _args);
-
 	if (bserrno) {
 		__blobfs2_rw_last(NULL, _args, bserrno);
 	} else {
@@ -3431,8 +3385,6 @@ static void __blobfs2_write_direct(void * _args)
 	uint64_t nr_clusters = spdk_blob_get_num_clusters(file->blob);
 	uint64_t new_length = args->op.blobfs2_rw.offset + args->op.blobfs2_rw.length;
 	uint64_t new_nr_clusters = __bytes_to_clusters(new_length, file->fs->bs_opts.cluster_sz);
-
-    __blobfs2_record_func(req, __blobfs2_write_direct, _args);
 
 	if (__blobfs2_blob_is_resizing(file)) {
 		// resize is in-processing. postpone this request after the resize to avoid -EBUSY
@@ -3460,8 +3412,6 @@ static void __blobfs2_read_direct(void * _args)
 	void * dma;
 	uint64_t start_lba, num_lba;
 	uint32_t lba_size;
-
-    __blobfs2_record_func(req, __blobfs2_read_direct, _args);
 
 	if (offset >= file->length) {
 		args->op.blobfs2_rw.length = 0;
@@ -3493,8 +3443,6 @@ static void __blobfs2_rw_cb(void * _args)
     struct spdk_fs_cb_args * args = &req->args;
     struct spdk_file * file = args->file;
 
-    __blobfs2_record_func(req, __blobfs2_rw_cb, _args);
-
     if (!args->op.blobfs2_rw.delayed) {
         // record this request for consistent sync
         TAILQ_INSERT_TAIL(&file->sync_requests, req, args.op.blobfs2_rw.sync_tailq);
@@ -3516,7 +3464,6 @@ static void __blobfs2_rw_cb(void * _args)
 
 static void __blobfs2_rw_resubmit(void * _args)
 {
-    __blobfs2_record_func(_args, __blobfs2_rw_resubmit, _args);
 	((struct spdk_fs_request *)_args)->args.op.blobfs2_rw.delayed = true;
 	__blobfs2_rw_cb(_args);
 }
@@ -3608,7 +3555,6 @@ static void __blobfs2_sync_done(void * _args, int bserrno)
 {
 	struct spdk_fs_request * req = _args;
 	struct spdk_file * file = req->args.file;
-    __blobfs2_record_func(req, __blobfs2_sync_done, _args);
 	req->args.rc = bserrno;
     req->args.fn.file_op = NULL;
 	TAILQ_REMOVE(&req->args.file->sync_requests, req, args.op.blobfs2_rw.sync_tailq);
@@ -3621,8 +3567,6 @@ static void __blobfs2_sync_cb(void * _args, int bserrno)
 	struct spdk_fs_cb_args * args = &req->args;
 	struct spdk_file * file = args->file;
 	struct cache_buffer * buffer;
-
-    __blobfs2_record_func(req, __blobfs2_sync_cb, _args);
 
 	if (TAILQ_EMPTY(&file->dirty_buffers)) {
 		args->rc = 0;
@@ -3662,7 +3606,6 @@ static void __blobfs2_delayed_barrier_cb(void * _args, int bserrno)
     struct spdk_fs_request * req = _args;
     struct spdk_fs_cb_args * args = &req->args;
     struct spdk_file * file = args->file;
-    __blobfs2_record_func(_args, __blobfs2_delayed_barrier_cb, _args);
     TAILQ_REMOVE(&file->sync_requests, req, args.op.blobfs2_rw.sync_tailq);
     args->fn.file_op = args->delayed_fn.file_op;
     args->delayed_fn.file_op = NULL;
@@ -3674,8 +3617,6 @@ static void __blobfs2_barrier_cb(void * _args)
 	struct spdk_fs_request * req = _args;
 	struct spdk_fs_cb_args * args = &req->args;
 	struct spdk_file * file = args->file;
-
-    __blobfs2_record_func(_args, __blobfs2_barrier_cb, _args);
 
 	if (!TAILQ_EMPTY(&file->sync_requests)) {
 	    req->args.delayed_fn.file_op = req->args.fn.file_op;
@@ -3904,9 +3845,6 @@ void blobfs2_dump_request(void)
 {
 	int i;
 	SPDK_ERRLOG("t_evict = %ld, alloc = %ld\n", t_evict_cache, t_alloc_buffer);
-	for (i = 0; i < 4096; i++) {
-		SPDK_ERRLOG("[%d]: %p\n", i, g_funcs[(g_nr_funcs - i) % 4096]);
-	}
 }
 
 SPDK_LOG_REGISTER_COMPONENT("blobfs", SPDK_LOG_BLOBFS)
