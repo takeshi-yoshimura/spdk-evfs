@@ -2789,9 +2789,20 @@ static void blobfs2_put_buffer(struct spdk_file * file, struct cache_buffer * bu
     }
 }
 
+static struct spdk_fs_request * prev_req = NULL; //for tracing
+
 static struct spdk_fs_request * blobfs2_alloc_fs_request(struct spdk_fs_channel * channel)
 {
-	struct spdk_fs_request * req = alloc_fs_request(channel);
+	struct spdk_fs_request * req;
+	if (prev_req) {
+		free(prev_req->args.funcs);
+		if (prev_req->args.from_request) {
+			free_fs_request(prev_req);
+		} else {
+			free(prev_req);
+		}
+	}
+	req = alloc_fs_request(channel);
 	if (req) {
 		req->args.from_request = true;
 		req->args.funcs = calloc(1, sizeof(void *) * 128);
@@ -2813,12 +2824,7 @@ static void blobfs2_free_fs_request(struct spdk_fs_request * req)
 	if (!req) {
 		return;
 	}
-    free(req->args.funcs);
-	if (req->args.from_request) {
-		free_fs_request(req);
-	} else {
-		free(req);
-	}
+	prev_req = req;
 }
 
 static void __blobfs2_record_func(struct spdk_fs_request * req, void * func, void * arg)
