@@ -143,6 +143,7 @@ struct spdk_fs_cb_args {
 	} delayed_fn;
 	void *arg;
 	sem_t *sem;
+	struct timespec submitted;
 	struct spdk_filesystem *fs;
 	struct spdk_file *file;
 	int rc;
@@ -2967,6 +2968,7 @@ static void __blobfs2_rw_last(struct cache_buffer *buffer, struct spdk_fs_reques
     struct spdk_file * file = req->args.file;
 	struct spdk_fs_cb_args * args = &req->args;
     struct spdk_fs_request * head;
+    struct timespec t;
 
     if (buffer) {
     	buffer->in_progress = false;
@@ -2994,6 +2996,11 @@ static void __blobfs2_rw_last(struct cache_buffer *buffer, struct spdk_fs_reques
         struct spdk_fs_request * dreq = TAILQ_FIRST(&buffer->write_waiter);
         TAILQ_REMOVE(&buffer->write_waiter, dreq, args.op.blobfs2_rw.write_tailq);
         dreq->args.delayed_fn.write_op(dreq);
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    if ((t.tv_sec - args->submitted.tv_sec) * 1000 * 1000 * 1000 + (t.tv_nsec - args->submitted.tv_nsec) > 1000 * 1000) {
+        SPDK_WARNLOG("too long request!\n");
     }
 
     if (args->sem) {
@@ -3409,6 +3416,7 @@ static void __blobfs2_rw_cb(void * _args)
     if (!args->op.blobfs2_rw.delayed) {
         // record this request for consistent sync
         TAILQ_INSERT_TAIL(&file->sync_requests, req, args.op.blobfs2_rw.sync_tailq);
+        clock_gettime(CLOCK_MONOTONIC, &args->submitted);
     } else {
         args->op.blobfs2_rw.delayed = false;
     }
@@ -3553,6 +3561,7 @@ static void __blobfs2_sync_cb(void * _args, int bserrno)
 		subreq->args.op.blobfs2_rw.length = buffer->buf_size;
 		subreq->args.fn.file_op = NULL;
 		subreq->args.sem = NULL;
+		clock_gettime(CLOCK_MONOTONIC, &subreq->args.submitted);
 		TAILQ_INSERT_TAIL(&file->sync_requests, subreq, args.op.blobfs2_rw.sync_tailq);
 		if (TAILQ_NEXT(buffer, dirty_tailq) == NULL) {
 			args->fn.file_op = __blobfs2_sync_done;
