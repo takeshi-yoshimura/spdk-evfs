@@ -3237,7 +3237,7 @@ static void __blobfs2_rw_buffered(void * _args)
 	if (!buffer) {
 		// should evict dirtied buffers. postpone this request after the eviction.
 		args->delayed_fn.write_op = __blobfs2_rw_resubmit;
-		TAILQ_INSERT_TAIL(&g_evict_waiter, req, args.op.blobfs2_rw.sync_tailq);
+		TAILQ_INSERT_TAIL(&g_evict_waiter, req, args.op.blobfs2_rw.evict_tailq);
 		return;
 	}
 	buffer->in_progress = true;
