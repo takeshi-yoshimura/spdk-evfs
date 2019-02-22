@@ -2880,7 +2880,7 @@ uint64_t blobfs2_fstat_unsafe(struct spdk_file * file)
 
 static void __blobfs2_resubmit_op_after_resize(struct spdk_fs_request *req)
 {
-    while (!TAILQ_EMPTY(&req->args.file->resize_waiter)) {
+    if (!TAILQ_EMPTY(&req->args.file->resize_waiter)) {
 		struct spdk_fs_request * dreq = TAILQ_FIRST(&req->args.file->resize_waiter);
 		TAILQ_REMOVE(&req->args.file->resize_waiter, dreq, args.op.blobfs2_rw.resize_tailq);
 		dreq->args.delayed_fn.resize_op(dreq);
@@ -2932,16 +2932,14 @@ static void __blobfs2_resize_cb(void * _args)
 		return;
 	}
 
-	if (new_nr_clusters != nr_clusters) {
+	if (new_nr_clusters > nr_clusters) {
 		spdk_blob_resize(file->blob, new_nr_clusters, __blobfs2_resize_done, req);
 	} else {
 		// no need to expand blob. update in-memory metadata only
-		file->length = new_length;
-		args->rc = 0;
-		sem_post(args->sem);
+        __blobfs2_resize_done(_args, 0);
 	}
 }
-
+// TODO: should barrier in case of racy write
 int blobfs2_truncate(struct spdk_file * file, struct spdk_io_channel * _channel, uint64_t length)
 {
 	struct spdk_fs_channel * channel = spdk_io_channel_get_ctx(_channel);
@@ -2987,7 +2985,7 @@ static void __blobfs2_rw_last(struct cache_buffer *buffer, struct spdk_fs_reques
     }
 
     // resubmit delayed reads/writes
-    while (buffer && !TAILQ_EMPTY(&buffer->write_waiter)) {
+    if (buffer && !TAILQ_EMPTY(&buffer->write_waiter)) {
         struct spdk_fs_request * dreq = TAILQ_FIRST(&buffer->write_waiter);
         TAILQ_REMOVE(&buffer->write_waiter, dreq, args.op.blobfs2_rw.write_tailq);
         dreq->args.delayed_fn.write_op(dreq);
@@ -3039,6 +3037,8 @@ static void __blobfs2_flush_buffer_blob(void * _args)
                        start_lba, num_lba, __blobfs2_buffer_flush_done, req);
 }
 
+static void __blobfs2_flush_buffer_check_resize(void * _args);
+
 static void __blobfs2_buffered_blob_resize_done(void * _args, int bserrno)
 {
 	struct spdk_fs_request * req = _args;
@@ -3050,7 +3050,11 @@ static void __blobfs2_buffered_blob_resize_done(void * _args, int bserrno)
 		args->file->length = args->op.blobfs2_rw.offset + args->op.blobfs2_rw.length;
 		__blobfs2_flush_buffer_blob(req);
 	}
-	__blobfs2_resubmit_op_after_resize(req);
+    if (!TAILQ_EMPTY(&req->args.file->resize_waiter)) {
+        struct spdk_fs_request * dreq = TAILQ_FIRST(&req->args.file->resize_waiter);
+        TAILQ_REMOVE(&req->args.file->resize_waiter, dreq, args.op.blobfs2_rw.resize_tailq);
+        __blobfs2_flush_buffer_check_resize(dreq);
+    }
 }
 
 static void __blobfs2_flush_buffer_check_resize(void * _args)
@@ -3069,12 +3073,11 @@ static void __blobfs2_flush_buffer_check_resize(void * _args)
 		return;
 	}
 
-	if (new_nr_clusters != nr_clusters) {
+	if (new_nr_clusters > nr_clusters) {
 		spdk_blob_resize(file->blob, new_nr_clusters, __blobfs2_buffered_blob_resize_done, req);
 	} else {
 		// no need to expand blob. update in-memory metadata only
-		file->length = new_length;
-		__blobfs2_flush_buffer_blob(_args);
+        __blobfs2_buffered_blob_resize_done(_args, 0);
 	}
 }
 
@@ -3241,7 +3244,7 @@ static void __blobfs2_rw_buffered(void * _args)
 	blobfs2_insert_buffer(file, buffer, buffer_offset);
 	args->op.blobfs2_rw.buffer = buffer;
 
-	blob_size = __blobfs2_blob_md_size(file->blob);
+	blob_size = __file_get_blob_size(file);
 	if (file->length < blob_size) {
 		blob_size = file->length;
 	}
@@ -3323,7 +3326,11 @@ static void __blobfs2_write_direct_blob_resize_done(void * _args, int bserrno)
 		args->file->length = args->op.blobfs2_rw.offset + args->op.blobfs2_rw.length;
 		__blobfs2_write_direct_blob(_args);
 	}
-	__blobfs2_resubmit_op_after_resize(req);
+    if (!TAILQ_EMPTY(&req->args.file->resize_waiter)) {
+        struct spdk_fs_request * dreq = TAILQ_FIRST(&req->args.file->resize_waiter);
+        TAILQ_REMOVE(&req->args.file->resize_waiter, dreq, args.op.blobfs2_rw.resize_tailq);
+        __blobfs2_flush_buffer_check_resize(dreq);
+    }
 }
 
 static void __blobfs2_write_direct(void * _args)
@@ -3342,12 +3349,11 @@ static void __blobfs2_write_direct(void * _args)
 		return;
 	}
 
-	if (new_nr_clusters != nr_clusters) {
+	if (new_nr_clusters > nr_clusters) {
 		spdk_blob_resize(file->blob, new_nr_clusters, __blobfs2_write_direct_blob_resize_done, req);
 	} else {
 		// no need to expand blob. update in-memory metadata only
-		file->length = new_length;
-		__blobfs2_write_direct_blob(_args);
+        __blobfs2_write_direct_blob_resize_done(_args, 0);
 	}
 }
 
