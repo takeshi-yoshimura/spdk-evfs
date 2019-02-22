@@ -212,16 +212,26 @@ init_cb(void *ctx, struct spdk_filesystem *fs, int fserrno)
     spdk_event_call(event);
 }
 
-static int g_nr_events = 0;
+#include <time.h>
+static long longest = 0;
+static void * func = NULL;
 
 static void
 __call_fn(void *arg1, void *arg2)
 {
     fs_request_fn fn;
+    struct timespec t, t2;
+    long nano;
 
-    --g_nr_events;
     fn = (fs_request_fn)arg1;
+    clock_gettime(CLOCK_MONOTONIC, &t);
     fn(arg2);
+    clock_gettime(CLOCK_MONOTONIC, &t2);
+    nano = (t2.tv_sec - t.tv_sec) * 1000 * 1000 * 1000 + (t2.tv_nsec - t.tv_nsec);
+    if (nano > longest) {
+        longest = nano;
+        func = fn;
+    }
 }
 
 static void
@@ -229,7 +239,6 @@ __send_request(fs_request_fn fn, void *arg)
 {
     struct spdk_event *event;
 
-    ++g_nr_events;
     event = spdk_event_allocate(0, __call_fn, (void *)fn, arg);
     spdk_event_call(event);
 }

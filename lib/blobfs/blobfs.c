@@ -3148,7 +3148,7 @@ static int blobfs2_evict_cache(void * _args)
 	struct cache_buffer * buffer;
 	uint64_t nr_evict;
 
-	if (g_nr_dirties * 100 < g_nr_buffers * g_dirty_ratio) {
+	if (g_nr_buffers < 10 || g_nr_dirties * 100 < g_nr_buffers * g_dirty_ratio) {
 		return 0;
 	}
 	nr_evict = (g_nr_buffers * g_dirty_ratio / 100 - g_nr_dirties) * 2;
