@@ -3056,14 +3056,16 @@ static void __blobfs2_buffer_flush_done(void * _args, int bserrno)
 	if (bserrno == 0) {
         buffer->dirty = false;
 		--g_nr_dirties;
-        TAILQ_REMOVE(&file->dirty_buffers, buffer, dirty_tailq);
+//        TAILQ_REMOVE(&file->dirty_buffers, buffer, dirty_tailq);
 
 		while (!TAILQ_EMPTY(&g_evict_waiter)) {
 			struct spdk_fs_request * dreq = TAILQ_FIRST(&g_evict_waiter);
 			TAILQ_REMOVE(&g_evict_waiter, dreq, args.op.blobfs2_rw.evict_tailq);
 			dreq->args.delayed_fn.write_op(dreq);
 		}
-    }
+    } else {
+		TAILQ_INSERT_TAIL(&file->dirty_buffers, buffer, dirty_tailq);
+	}
 	__blobfs2_rw_last(buffer, req, bserrno);
 }
 
@@ -3096,7 +3098,9 @@ static void __blobfs2_buffered_blob_resize_done(void * _args, int bserrno)
     __blobfs2_record_func(req, __blobfs2_buffered_blob_resize_done, _args);
 
 	if (bserrno) {
-		__blobfs2_rw_last(req->args.op.blobfs2_rw.buffer, _args, bserrno);
+		struct cache_buffer * buffer = req->args.op.blobfs2_rw.buffer;
+		TAILQ_INSERT_TAIL(&req->args.file->dirty_buffers, buffer, dirty_tailq);
+		__blobfs2_rw_last(buffer, _args, bserrno);
 	} else {
 		args->file->length = args->op.blobfs2_rw.offset + args->op.blobfs2_rw.length;
 		__blobfs2_flush_buffer_blob(req);
@@ -3147,6 +3151,7 @@ static void __blobfs2_flush_buffer(void * _args)
         return;
     }
     buffer->in_progress = true;
+    TAILQ_REMOVE(&req->args.file->dirty_buffers, buffer, dirty_tailq);
     __blobfs2_flush_buffer_check_resize(_args);
 }
 
@@ -3244,7 +3249,7 @@ static int blobfs2_evict_cache(void * _args)
 	}
 	clock_gettime(CLOCK_MONOTONIC, &t2);
 	n = (t2.tv_sec - t.tv_sec) * 1000 * 1000 * 1000 + (t2.tv_nsec - t.tv_nsec);
-	if (n < t_evict_cache) {
+	if (n > t_evict_cache) {
 		t_evict_cache = n;
 	}
 	return 0;
