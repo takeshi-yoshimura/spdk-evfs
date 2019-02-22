@@ -230,7 +230,7 @@ __call_fn(void *arg1, void *arg2)
     clock_gettime(CLOCK_MONOTONIC, &t2);
     nano = (t2.tv_sec - t.tv_sec) * 1000 * 1000 * 1000 + (t2.tv_nsec - t.tv_nsec);
     if (nano > 1000 * 1000) {
-        blobfs2_dump_request(arg2);
+        blobfs2_dump_request();
     }
     if (nano > longest) {
         longest = nano;

@@ -3894,7 +3894,7 @@ int blobfs2_access(struct spdk_filesystem * fs, struct spdk_io_channel * _channe
 	return rc;
 }
 
-void blobfs2_dump_request()
+void blobfs2_dump_request(void)
 {
 	int i;
 	SPDK_ERRLOG("t_evict = %ld, alloc = %ld\n", t_evict_cache, t_alloc_buffer);
