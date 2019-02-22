@@ -3864,5 +3864,17 @@ int blobfs2_access(struct spdk_filesystem * fs, struct spdk_io_channel * _channe
 	return rc;
 }
 
+void blobfs2_dump_request(void * args)
+{
+	struct spdk_fs_request * req = args;
+	int i;
+	struct timespec t;
+	clock_gettime(CLOCK_MONOTONIC, &t);
+	SPDK_ERRLOG("time (nsec): %ld\n", ((t.tv_sec - req->args.submitted.tv_sec) * 1000 * 1000 * 1000) + (t.tv_nsec - req->args.submitted.tv_nsec));
+	for (i = 0; i < req->args.nr_funcs / 2; i++) {
+		SPDK_ERRLOG("func[%d]: %p, %p\n", i, req->args.funcs[i * 2], req->args.funcs[i * 2 + 1]);
+	}
+}
+
 SPDK_LOG_REGISTER_COMPONENT("blobfs", SPDK_LOG_BLOBFS)
 SPDK_LOG_REGISTER_COMPONENT("blobfs_rw", SPDK_LOG_BLOBFS_RW)

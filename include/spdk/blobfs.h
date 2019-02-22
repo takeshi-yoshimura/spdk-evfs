@@ -422,6 +422,8 @@ int spdk_file_get_id(struct spdk_file *file, void *id, size_t size);
 
 int blobfs2_access(struct spdk_filesystem *fs, struct spdk_io_channel * _channel, const char * path, int mode);
 
+void blobfs2_dump_request(void * args);
+
 #ifdef __cplusplus
 }
 #endif
