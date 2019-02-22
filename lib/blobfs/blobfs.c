@@ -2971,6 +2971,7 @@ static void __blobfs2_rw_last(struct cache_buffer *buffer, struct spdk_fs_reques
 
     if (buffer) {
     	buffer->in_progress = false;
+        blobfs2_put_buffer(file, buffer);
     }
 
     if (!args->op.blobfs2_rw.is_read) {
@@ -2985,14 +2986,11 @@ static void __blobfs2_rw_last(struct cache_buffer *buffer, struct spdk_fs_reques
 		head->args.fn.file_op(head, rc);
     }
 
-    if (buffer) {
-        blobfs2_put_buffer(file, buffer);
-        // resubmit delayed reads/writes
-        while (!TAILQ_EMPTY(&buffer->write_waiter)) {
-        	struct spdk_fs_request * dreq = TAILQ_FIRST(&buffer->write_waiter);
-			TAILQ_REMOVE(&buffer->write_waiter, dreq, args.op.blobfs2_rw.write_tailq);
-			dreq->args.delayed_fn.write_op(dreq);
-        }
+    // resubmit delayed reads/writes
+    while (buffer && !TAILQ_EMPTY(&buffer->write_waiter)) {
+        struct spdk_fs_request * dreq = TAILQ_FIRST(&buffer->write_waiter);
+        TAILQ_REMOVE(&buffer->write_waiter, dreq, args.op.blobfs2_rw.write_tailq);
+        dreq->args.delayed_fn.write_op(dreq);
     }
 
     if (args->sem) {
