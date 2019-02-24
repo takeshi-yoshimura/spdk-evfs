@@ -3570,6 +3570,7 @@ static void __blobfs2_sync_cb(void * _args, int bserrno)
 	struct spdk_fs_cb_args * args = &req->args;
 	struct spdk_file * file = args->file;
 	struct cache_buffer * buffer;
+	TAILQ_HEAD(, spdk_fs_request) reqs;
 
 	if (TAILQ_EMPTY(&file->dirty_buffers)) {
 		args->rc = 0;
@@ -3577,6 +3578,7 @@ static void __blobfs2_sync_cb(void * _args, int bserrno)
 		return;
 	}
 
+	TAILQ_INIT(&reqs);
 	TAILQ_FOREACH(buffer, &file->dirty_buffers, dirty_tailq) {
 		struct spdk_fs_request * subreq = blobfs2_alloc_fs_request(req->channel);
 
@@ -3594,13 +3596,20 @@ static void __blobfs2_sync_cb(void * _args, int bserrno)
 		subreq->args.op.blobfs2_rw.length = buffer->buf_size;
 		subreq->args.fn.file_op = NULL;
 		subreq->args.sem = NULL;
-		clock_gettime(CLOCK_MONOTONIC, &subreq->args.submitted);
-		TAILQ_INSERT_TAIL(&file->sync_requests, subreq, args.op.blobfs2_rw.sync_tailq);
-		if (TAILQ_NEXT(buffer, dirty_tailq) == NULL) {
-			args->fn.file_op = __blobfs2_sync_done;
-			TAILQ_INSERT_TAIL(&file->sync_requests, req, args.op.blobfs2_rw.sync_tailq);
+		TAILQ_INSERT_TAIL(&reqs, subreq, args.op.blobfs2_rw.resize_tailq);
+	}
+
+	// append a notifier request
+	args->fn.file_op = __blobfs2_sync_done;
+	TAILQ_INSERT_TAIL(&reqs, req, args.op.blobfs2_rw.resize_tailq);
+
+	while (!TAILQ_EMPTY(&reqs)) {
+		struct spdk_fs_request * subreq = TAILQ_FIRST(&reqs);
+		TAILQ_REMOVE(&reqs, subreq, args.op.blobfs2_rw.resize_tailq);
+		TAILQ_INSERT_TAIL(&reqs, subreq, args.op.blobfs2_rw.sync_tailq);
+		if (subreq != req) {
+			__blobfs2_flush_buffer(subreq);
 		}
-		__blobfs2_flush_buffer(subreq);
 	}
 }
 
