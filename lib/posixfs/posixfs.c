@@ -191,6 +191,7 @@ start_hookfs_fn(void *arg1, void *arg2)
     hookfs_thread2 = pthread_self();
     g_channel = spdk_fs_alloc_io_channel_sync(g_fs);
 
+    blobfs2_init();
     realfs.initialized = 1;
     spdk_smp_rmb();
     rc = hookfs_mkdir(dummy, 0755);

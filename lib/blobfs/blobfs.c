@@ -249,7 +249,6 @@ __initialize_cache(void)
 		assert(false);
 	}
 	TAILQ_INIT(&g_caches);
-	init_blobfs2();
 	pthread_spin_init(&g_caches_lock, 0);
 }
 
@@ -2701,7 +2700,7 @@ static uint64_t g_nr_dirties;
 static TAILQ_HEAD(, spdk_fs_request) g_evict_waiter;
 static TAILQ_HEAD(, cache_buffer) g_blank_buffer;
 
-static void init_blobfs2(void) {
+void blobfs2_init(void) {
 
 	g_page_size = sysconf(_SC_PAGESIZE);
 	g_nr_buffers = 0;
@@ -2711,6 +2710,7 @@ static void init_blobfs2(void) {
 		SPDK_WARNLOG("CacheBufferShift should be larger than page shift for this platform. This hurts Blobfs2 performance\n");
 	}
 
+	TAILQ_INIT(&g_blank_buffer);
 	while (g_dmasize < g_fs_cache_size) {
 		struct cache_buffer * buf = calloc(1, sizeof(struct cache_buffer));
 		if (!buf) {
@@ -3843,7 +3843,6 @@ int blobfs2_access(struct spdk_filesystem * fs, struct spdk_io_channel * _channe
 
 void blobfs2_dump_request(void)
 {
-	int i;
 	SPDK_ERRLOG("t_evict = %ld, alloc = %ld\n", t_evict_cache, t_alloc_buffer);
 }
 

@@ -424,6 +424,8 @@ int blobfs2_access(struct spdk_filesystem *fs, struct spdk_io_channel * _channel
 
 void blobfs2_dump_request(void);
 
+void blobfs2_init(void);
+
 #ifdef __cplusplus
 }
 #endif

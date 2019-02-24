@@ -1,0 +1,4 @@
+DPDK config
+use 1GB hugepages (/sys/kernel/mm/hugepages/hugepages-1048576kB)
+CONFIG_RTE_MAX_NUMA_NODES=256, since P9 has 6 numa nodes, which node id becomes > 32 (default)
+CONFIG_RTE_MAX_MEMSEG must be larger than the number of hugepages
