@@ -2961,6 +2961,7 @@ int blobfs2_truncate(struct spdk_file * file, struct spdk_io_channel * _channel,
 {
 	struct spdk_fs_channel * channel = spdk_io_channel_get_ctx(_channel);
 	struct spdk_fs_request * req;
+	int rc;
 
 	req = blobfs2_alloc_fs_request(channel);
 	if (!req) {
@@ -2973,9 +2974,10 @@ int blobfs2_truncate(struct spdk_file * file, struct spdk_io_channel * _channel,
 	req->args.op.blobfs2_rw.length = length;
 	channel->send_request(__blobfs2_resize_cb, req);
 	sem_wait(&channel->sem);
+	rc = req->args.rc;
 	blobfs2_free_fs_request(req);
 
-	return req->args.rc;
+	return rc;
 }
 
 static void __blobfs2_rw_last(struct cache_buffer *buffer, struct spdk_fs_request *req, int rc)
@@ -3479,6 +3481,7 @@ static int64_t blobfs2_rw(struct spdk_file *file, struct spdk_io_channel * _chan
 	uint64_t align = spdk_bs_get_io_unit_size(file->fs->bs);
 	void * user_buf = NULL;
 	bool waitrc = (is_read || (oflag & (O_SYNC | O_DSYNC | O_DIRECT)));
+	int rc;
 
 	if (length == 0) {
 		return 0;
@@ -3522,10 +3525,13 @@ static int64_t blobfs2_rw(struct spdk_file *file, struct spdk_io_channel * _chan
 	channel->send_request(__blobfs2_rw_cb, req);
 	if (waitrc) {
 		sem_wait(&channel->sem);
+		rc = is_read ? req->args.op.blobfs2_rw.length: 0;
 		blobfs2_free_fs_request(req);
+	} else {
+		rc = is_read ? req->args.op.blobfs2_rw.length: 0;
 	}
 
-	return is_read ? req->args.op.blobfs2_rw.length: 0; // terrible. original blobfs does this
+	return rc;
 }
 
 int64_t blobfs2_write(struct spdk_file *file, struct spdk_io_channel * _channel, void * payload, uint64_t offset, uint64_t length, int oflag)
@@ -3606,7 +3612,7 @@ static void __blobfs2_sync_cb(void * _args, int bserrno)
 	while (!TAILQ_EMPTY(&reqs)) {
 		struct spdk_fs_request * subreq = TAILQ_FIRST(&reqs);
 		TAILQ_REMOVE(&reqs, subreq, args.op.blobfs2_rw.resize_tailq);
-		TAILQ_INSERT_TAIL(&reqs, subreq, args.op.blobfs2_rw.sync_tailq);
+		TAILQ_INSERT_TAIL(&file->sync_requests, subreq, args.op.blobfs2_rw.sync_tailq);
 		if (subreq != req) {
 			__blobfs2_flush_buffer(subreq);
 		}
@@ -3643,6 +3649,7 @@ int blobfs2_sync(struct spdk_file * file, struct spdk_io_channel * _channel)
 {
 	struct spdk_fs_channel * channel = spdk_io_channel_get_ctx(_channel);
     struct spdk_fs_request * req;
+    int rc;
 
     req = blobfs2_alloc_fs_request(channel);
     if (!req) {
@@ -3654,14 +3661,16 @@ int blobfs2_sync(struct spdk_file * file, struct spdk_io_channel * _channel)
     req->args.fn.file_op = __blobfs2_sync_cb;
     channel->send_request(__blobfs2_barrier_cb, req);
 	sem_wait(&channel->sem);
+	rc = req->args.rc;
 	blobfs2_free_fs_request(req);
 
-	return req->args.rc;
+	return rc;
 }
 
 int blobfs2_barrier(struct spdk_file * file, struct spdk_io_channel * _channel) {
 	struct spdk_fs_channel * channel = spdk_io_channel_get_ctx(_channel);
 	struct spdk_fs_request * req;
+	int rc;
 
 	req = blobfs2_alloc_fs_request(channel);
 	if (!req) {
@@ -3673,9 +3682,10 @@ int blobfs2_barrier(struct spdk_file * file, struct spdk_io_channel * _channel) 
 	req->args.fn.file_op = __blobfs2_wake_caller;
 	channel->send_request(__blobfs2_barrier_cb, req);
 	sem_wait(&channel->sem);
+	rc = req->args.rc;
 	blobfs2_free_fs_request(req);
 
-	return req->args.rc;
+	return rc;
 }
 
 int blobfs2_close(struct spdk_file * file, struct spdk_io_channel * _channel)
