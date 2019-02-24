@@ -426,6 +426,8 @@ void blobfs2_dump_request(void);
 
 void blobfs2_init(void);
 
+void blobfs2_shutdown(void);
+
 #ifdef __cplusplus
 }
 #endif

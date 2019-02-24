@@ -225,7 +225,6 @@ struct spdk_fs_cb_args {
 };
 
 static void cache_free_buffers(struct spdk_file *file);
-static void init_blobfs2(void);
 
 void
 spdk_fs_opts_init(struct spdk_blobfs_opts *opts)
@@ -2699,9 +2698,11 @@ static uint64_t g_nr_buffers;
 static uint64_t g_nr_dirties;
 static TAILQ_HEAD(, spdk_fs_request) g_evict_waiter;
 static TAILQ_HEAD(, cache_buffer) g_blank_buffer;
+static void * dma_head;
 
-void blobfs2_init(void) {
-
+void blobfs2_init(void)
+{
+	uint8_t * dma;
 	g_page_size = sysconf(_SC_PAGESIZE);
 	g_nr_buffers = 0;
 	g_nr_dirties = 0;
@@ -2711,22 +2712,24 @@ void blobfs2_init(void) {
 	}
 
 	TAILQ_INIT(&g_blank_buffer);
+	dma = spdk_dma_malloc(g_fs_cache_size, g_page_size, NULL);
+	g_dmasize = 0;
 	while (g_dmasize < g_fs_cache_size) {
 		struct cache_buffer * buf = calloc(1, sizeof(struct cache_buffer));
 		if (!buf) {
 			SPDK_WARNLOG("calloc failed during Blobfs initialization\n");
 			break;
 		}
-		buf->buf = spdk_dma_malloc(CACHE_BUFFER_SIZE, g_page_size, NULL);
-		if (buf->buf) {
-			g_dmasize += CACHE_BUFFER_SIZE;
-			TAILQ_INSERT_TAIL(&g_blank_buffer, buf, zeroref_tailq);
-		} else {
-			free(buf);
-			SPDK_WARNLOG("spdk_dma_malloc failed during Blobfs initialization. should assign larger memory to the SPDK app\n");
-			break;
-		}
+		buf->buf = dma + g_dmasize;
+		g_dmasize += CACHE_BUFFER_SIZE;
+		TAILQ_INSERT_TAIL(&g_blank_buffer, buf, zeroref_tailq);
 	}
+	dma_head = dma;
+}
+
+void blobfs2_shutdown(void)
+{
+	spdk_dma_free(dma_head);
 }
 
 static void __blobfs2_wake_caller(void * _args, int rc)
@@ -3702,7 +3705,6 @@ static void __blobfs2_drop_cache(struct spdk_file * file)
 		struct cache_buffer * buffer = spdk_tree_find_buffer(file->tree, off);
 		if (buffer) {
 			TAILQ_INSERT_TAIL(&g_blank_buffer, buffer, zeroref_tailq);
-			g_dmasize -= CACHE_BUFFER_SIZE;
 		}
 	}
 	spdk_tree_free_buffers(file->tree);

@@ -278,6 +278,7 @@ shutdown_cb(void *ctx, int fserrno)
 static void
 hookfs_shutdown(void)
 {
+    blobfs2_shutdown();
     spdk_fs_unload(g_fs, shutdown_cb, NULL);
 }
 
@@ -303,9 +304,8 @@ static void * start_app(void * args) {
     opts.name = program_invocation_short_name;
     opts.config_file = getenv(HOOKFS_SPDK_CONF_ENV);
     opts.reactor_mask = "0x3";
-    opts.mem_size = 6144;
+    opts.mem_size = 20 * 1024;
     opts.shutdown_cb = hookfs_shutdown;
-    opts.hugepage_single_segments = 1;
 
     if (g_logstr) {
         rc = spdk_log_set_trace_flag(g_logstr);
