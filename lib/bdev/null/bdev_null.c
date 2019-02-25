@@ -44,6 +44,9 @@
 
 #include "bdev_null.h"
 
+#include <sys/time.h>
+#include <time.h>
+
 struct null_bdev {
 	struct spdk_bdev	bdev;
 	TAILQ_ENTRY(null_bdev)	tailq;

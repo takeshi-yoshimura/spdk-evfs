@@ -4,3 +4,6 @@
 [submodule "intel-ipsec-mb"]
 	path = intel-ipsec-mb
 	url = https://github.com/spdk/intel-ipsec-mb.git
+[submodule "lib/bdev/capi/capiflash"]
+	path = lib/bdev/capi/capiflash
+	url = https://github.com/open-power/capiflash.git

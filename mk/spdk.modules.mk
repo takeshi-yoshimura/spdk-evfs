@@ -54,6 +54,23 @@ BLOCKDEV_MODULES_LIST += bdev_iscsi
 # Fedora installs libiscsi to /usr/lib64/iscsi for some reason.
 BLOCKDEV_MODULES_DEPS += -L/usr/lib64/iscsi -liscsi
 endif
+ifeq ($(CONFIG_CAPI),y)
+BLOCKDEV_MODULES_LIST += bdev_capi
+CAPI_DIR := $(abspath $(CONFIG_CAPI_DIR))
+#BLOCKDEV_MODULES_DEPS += -L$(CAPI_DIR)/lib
+ifeq ($(CONFIG_CXLFLASH_COMPAT),y)
+CXLFLASH_DIR := $(abspath $(CONFIG_CXLFLASH_DIR))
+BLOCKDEV_MODULES_DEPS2 = -L$(CXLFLASH_DIR)/lib -lcxlflash_compat
+else
+BLOCKDEV_MODULES_DEPS2 = -L$(CAPI_DIR)/lib64 -lcflsh_block-0
+endif
+endif
+ifeq ($(CONFIG_CXLFLASH),y)
+BLOCKDEV_MODULES_LIST += bdev_cxlflash
+CXLFLASH_DIR := $(abspath $(CONFIG_CXLFLASH_DIR))
+BLOCKDEV_MODULES_DEPS2 += -L$(CXLFLASH_DIR)/lib -lcxlflash
+endif
+
 endif
 
 ifeq ($(CONFIG_RBD),y)
@@ -83,6 +100,7 @@ COPY_MODULES_LIST = copy_ioat ioat
 
 BLOCKDEV_MODULES_LINKER_ARGS = -Wl,--whole-archive \
 			       $(BLOCKDEV_MODULES_LIST:%=-lspdk_%) \
+			       $(BLOCKDEV_MODULES_DEPS2) \
 			       -Wl,--no-whole-archive \
 			       $(BLOCKDEV_MODULES_DEPS)
 

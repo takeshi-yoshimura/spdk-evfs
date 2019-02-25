@@ -31,32 +31,14 @@
 #  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-SPDK_ROOT_DIR := $(abspath $(CURDIR)/../..)
+SPDK_ROOT_DIR := $(abspath $(CURDIR)/../../..)
 include $(SPDK_ROOT_DIR)/mk/spdk.common.mk
 
-ifeq ($(CONFIG_VTUNE),y)
-CFLAGS += -I$(CONFIG_VTUNE_DIR)/include -I$(CONFIG_VTUNE_DIR)/sdk/src/ittnotify
-endif
+CXLFLASH_DIR := $(abspath $(CONFIG_CXLFLASH_DIR))
 
-C_SRCS = bdev.c part.c scsi_nvme.c
-C_SRCS-$(CONFIG_VTUNE) += vtune.c
-LIBNAME = bdev
+CFLAGS += -I$(CXLFLASH_DIR)/include -L$(CXLFLASH_DIR)/lib -lcxlflash
 
-DIRS-y += error gpt lvol malloc null nvme passthru raid rpc split
-
-ifeq ($(CONFIG_CRYPTO),y)
-DIRS-y += crypto
-endif
-
-ifeq ($(OS),Linux)
-DIRS-y += aio
-DIRS-$(CONFIG_CAPI) += capi
-DIRS-$(CONFIG_CXLFLASH) += cxlflash
-DIRS-$(CONFIG_ISCSI_INITIATOR) += iscsi
-DIRS-$(CONFIG_VIRTIO) += virtio
-DIRS-$(CONFIG_PMDK) += pmem
-endif
-
-DIRS-$(CONFIG_RBD) += rbd
+C_SRCS = bdev_cxlflash.c bdev_cxlflash_rpc.c
+LIBNAME = bdev_cxlflash
 
 include $(SPDK_ROOT_DIR)/mk/spdk.lib.mk
