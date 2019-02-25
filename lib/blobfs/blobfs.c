@@ -3231,7 +3231,7 @@ static int blobfs2_evict_cache(void * _args)
 		return 0;
 	}
 
-	if (g_nr_buffers * g_dirty_ratio / 100 <= g_nr_dirties) {
+	if (g_nr_buffers * g_dirty_ratio / 100 > g_nr_dirties) {
 	    return 0;
 	}
 
