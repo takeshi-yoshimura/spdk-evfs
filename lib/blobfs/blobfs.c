@@ -3359,10 +3359,10 @@ static void __blobfs2_rw_direct_done(void * _args, int bserrno)
 	uint64_t length = args->op.blobfs2_rw.length;
 
     if (args->op.blobfs2_rw.is_read) {
-		memcpy(args->op.blobfs2_rw.user_buf, args->op.blobfs2_rw.pin_buf, length);
+		memcpy(args->op.blobfs2_rw.user_buf, args->op.blobfs2_rw.buffer->buf, length);
     }
 
-    spdk_dma_free(req->args.op.blobfs2_rw.pin_buf);
+    TAILQ_INSERT_TAIL(&g_blank_buffer, args->op.blobfs2_rw.buffer, zeroref_tailq);
 	__blobfs2_rw_last(NULL, (struct spdk_fs_request *) _args, bserrno);
 }
 
@@ -3371,27 +3371,26 @@ static void __blobfs2_write_direct_blob(void * _args)
 	struct spdk_fs_request * req = _args;
 	struct spdk_fs_cb_args * args = &req->args;
 	struct spdk_file * file = args->file;
+	struct cache_buffer * buffer;
 	uint64_t offset = args->op.blobfs2_rw.offset;
 	uint64_t length = args->op.blobfs2_rw.length;
 	uint64_t start_lba, num_lba;
 	uint32_t lba_size;
 //	uint64_t align = spdk_bs_get_io_unit_size(file->fs->bs);
-	void * dma;
 
 	// we need to alloc temporal buffer to issue DMA
-	dma = spdk_dma_malloc(length, g_page_size, NULL);
-	if (!dma) {
+	buffer = TAILQ_FIRST(&g_blank_buffer);
+	if (!buffer) {
 		SPDK_ERRLOG("failed to alloc buffer\n");
 		__blobfs2_rw_last(NULL, req, -ENOMEM);
 		return;
 	}
+	args->op.blobfs2_rw.buffer = buffer;
 
 	__get_page_parameters(file, offset, length, &start_lba, &lba_size, &num_lba);
-	args->op.blobfs2_rw.pin_buf = dma;
-	memcpy(dma, args->op.blobfs2_rw.user_buf, length);
+	memcpy(buffer->buf, args->op.blobfs2_rw.user_buf, length);
 	spdk_blob_io_write(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
-					   dma + (start_lba * lba_size) - offset,
-					   start_lba, num_lba, __blobfs2_rw_direct_done, req);
+	        buffer->buf + (start_lba * lba_size) - offset, start_lba, num_lba, __blobfs2_rw_direct_done, req);
 }
 
 static void __blobfs2_write_direct(void * _args);
@@ -3445,8 +3444,7 @@ static void __blobfs2_read_direct(void * _args)
 	struct spdk_file * file = args->file;
 	uint64_t offset = args->op.blobfs2_rw.offset;
 	uint64_t length = args->op.blobfs2_rw.length;
-//	uint64_t align = spdk_bs_get_io_unit_size(file->fs->bs);
-	void * dma;
+	struct cache_buffer * buffer;
 	uint64_t start_lba, num_lba;
 	uint32_t lba_size;
 
@@ -3460,18 +3458,17 @@ static void __blobfs2_read_direct(void * _args)
 	}
 
 	// we need to alloc temporal buffer to issue DMA
-	dma = spdk_dma_malloc(length, g_page_size, NULL);
-	if (!dma) {
+    buffer = TAILQ_FIRST(&g_blank_buffer);
+	if (!buffer) {
 		SPDK_ERRLOG("failed to alloc buffer\n");
 		__blobfs2_rw_last(NULL, req, -ENOMEM);
 		return;
 	}
 
 	__get_page_parameters(file, offset, length, &start_lba, &lba_size, &num_lba);
-	args->op.blobfs2_rw.pin_buf = dma;
+	args->op.blobfs2_rw.buffer = buffer;
 	spdk_blob_io_read(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
-					  dma + (start_lba * lba_size) - offset,
-					  start_lba, num_lba, __blobfs2_rw_direct_done, req);
+	        buffer->buf + (start_lba * lba_size) - offset, start_lba, num_lba, __blobfs2_rw_direct_done, req);
 }
 
 static void __blobfs2_rw_cb(void * _args)
