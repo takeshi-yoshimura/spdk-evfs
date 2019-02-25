@@ -469,7 +469,7 @@ static int bdev_capi_initialize(void)
 
 	SPDK_DEBUGLOG(SPDK_LOG_BDEV_CAPI, "spdk_io_device_register\n");
 	spdk_io_device_register(&g_capi_bdev_head, capi_bdev_create_cb, capi_bdev_destroy_cb,
-			sizeof(struct capi_io_channel));
+			sizeof(struct capi_io_channel), NULL);
 
 	i = 0;
 	while (true) {

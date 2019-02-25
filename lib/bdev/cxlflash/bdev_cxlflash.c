@@ -474,7 +474,7 @@ struct spdk_bdev *create_cxlflash_bdev(char *name, struct spdk_uuid *uuid, char 
 
     SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "spdk_io_device_register\n");
     spdk_io_device_register(bdev, cxlflash_bdev_create_cb, cxlflash_bdev_destroy_cb,
-                            sizeof(struct cxlflash_io_channel));
+                            sizeof(struct cxlflash_io_channel), NULL);
 
     SPDK_DEBUGLOG(SPDK_LOG_BDEV_CXLFLASH, "spdk_bdev_register\n");
     rc = spdk_bdev_register(&bdev->disk);
