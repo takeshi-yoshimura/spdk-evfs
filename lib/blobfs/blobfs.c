@@ -54,6 +54,7 @@
 #define SPDK_BLOBFS_DEFAULT_OPTS_CLUSTER_SZ (1024 * 1024)
 
 static uint64_t g_fs_cache_size = BLOBFS_DEFAULT_CACHE_SIZE;
+static uint64_t g_thread_cache_size = BLOBFS_DEFAULT_CACHE_SIZE;
 static struct spdk_mempool *g_cache_pool;
 static TAILQ_HEAD(, spdk_file) g_caches;
 static int g_fs_count = 0;
@@ -462,12 +463,19 @@ fs_conf_parse(void)
 		g_dirty_ratio = 20;
 	}
 
-	g_fs_cache_size = spdk_conf_section_get_intval(sp, "CacheSizeInGB");
+	g_fs_cache_size = spdk_conf_section_get_intval(sp, "FSCacheSizeInGB");
 	if (g_fs_cache_size <= 0) {
 		SPDK_WARNLOG("CacheSizeInGB must be > 0\n");
 		g_fs_cache_size = 40;
 	}
 	g_fs_cache_size *= 1024 * 1024 * 1024;
+
+	g_thread_cache_size = spdk_conf_section_get_intval(sp, "ThreadCacheSizeInGB");
+	if (g_thread_cache_size <= 0) {
+		SPDK_WARNLOG("ThreadCacheSizeInGB must be > 0\n");
+		g_fs_cache_size = 40;
+	}
+	g_thread_cache_size *= 1024 * 1024 * 1024;
 }
 
 static struct spdk_filesystem *
@@ -2699,13 +2707,40 @@ cache_free_buffers(struct spdk_file *file)
 #define O_DIRECT 1
 #endif
 
+struct thread_mem {
+	void * page;
+	TAILQ_ENTRY(thread_mem) link;
+};
+
 static uint64_t g_page_size;
 static int64_t g_nr_buffers;
 static int64_t g_nr_dirties;
 static TAILQ_HEAD(, cache_buffer) g_zeroref_caches;
 static TAILQ_HEAD(, spdk_fs_request) g_evict_waiter;
 static TAILQ_HEAD(, cache_buffer) g_blank_buffer;
+static TAILQ_HEAD(, thread_mem) g_thread_memory;
 static void ** dma_head;
+// TODO
+int blobfs2_thread_init(void)
+{
+	size_t i;
+	struct thread_mem * mem = malloc(sizeof(struct thread_mem) * g_thread_cache_size / CACHE_BUFFER_SIZE);
+	TAILQ_INIT(&g_thread_memory);
+	if (!mem) {
+		return -ENOMEM;
+	}
+	for (i = 0; i < g_thread_cache_size / 1024 / 1024 / 1024; i++) {
+		uint64_t offset;
+		void * m = malloc(1024 * 1024 * 1024);
+		if (!m) {
+			return -ENOMEM;
+		}
+		for (offset = 0; offset < 1024 * 1024 * 1024; offset += CACHE_BUFFER_SIZE) {
+			struct thread_mem * next = m + offset;
+			TAILQ_INSERT_TAIL(&g_thread_memory, next, link);
+		}
+	}
+}
 
 int blobfs2_init(void)
 {
@@ -2714,13 +2749,14 @@ int blobfs2_init(void)
 	g_page_size = sysconf(_SC_PAGESIZE);
 	g_nr_buffers = 0;
 	g_nr_dirties = 0;
+	TAILQ_INIT(&g_caches);
 	TAILQ_INIT(&g_zeroref_caches);
 	TAILQ_INIT(&g_evict_waiter);
 	if (CACHE_BUFFER_SIZE < g_page_size) {
 		SPDK_WARNLOG("CacheBufferShift should be larger than page shift for this platform. This hurts Blobfs2 performance\n");
 	}
 
-	dma_head = calloc(1, sizeof(void *));
+	dma_head = calloc(1, sizeof(void *) * g_fs_cache_size / 1024 / 1024 / 1024);
 	if (!dma_head) {
 		return -ENOMEM;
 	}
@@ -2733,14 +2769,13 @@ int blobfs2_init(void)
 			SPDK_ERRLOG("failed to spdk_dma_malloc(%lu, %lu, NULL)\n", 1024UL * 1024 * 1024, g_page_size);
 			return -ENOMEM;
 		}
-		while (dmasize < g_fs_cache_size / 1024 / 1024 / 1024) {
+		for (dmasize = 0; dmasize < 1024 * 1024 * 1024; dmasize += CACHE_BUFFER_SIZE) {
 			struct cache_buffer * buf = calloc(1, sizeof(struct cache_buffer));
 			if (!buf) {
 				SPDK_WARNLOG("calloc failed during Blobfs initialization\n");
 				break;
 			}
 			buf->buf = dma + dmasize;
-			dmasize += CACHE_BUFFER_SIZE;
 			TAILQ_INSERT_TAIL(&g_blank_buffer, buf, zeroref_tailq);
 		}
 		dma_head[i] = dma;
