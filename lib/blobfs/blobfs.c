@@ -93,7 +93,6 @@ struct spdk_file {
     TAILQ_HEAD(dirty_buffer_head, cache_buffer) dirty_buffers;
 	TAILQ_HEAD(resize_waiter_head, spdk_fs_request) resize_waiter;
 	TAILQ_HEAD(evict_waiter_head, spdk_fs_request) evict_waiter;
-    TAILQ_HEAD(, cache_buffer) zeroref_caches;
 	TAILQ_ENTRY(spdk_file)	cache_tailq;
 };
 
@@ -570,7 +569,6 @@ file_alloc(struct spdk_filesystem *fs)
     TAILQ_INIT(&file->dirty_buffers);
 	TAILQ_INIT(&file->resize_waiter);
 	TAILQ_INIT(&file->evict_waiter);
-    TAILQ_INIT(&file->zeroref_caches);
 	pthread_spin_init(&file->lock, 0);
 	TAILQ_INSERT_TAIL(&fs->files, file, tailq);
 	file->priority = SPDK_FILE_PRIORITY_LOW;
@@ -2696,16 +2694,18 @@ static uint64_t g_dmasize = 0;
 static uint64_t g_page_size;
 static int64_t g_nr_buffers;
 static int64_t g_nr_dirties;
+static TAILQ_HEAD(, cache_buffer) g_zeroref_caches;
 static TAILQ_HEAD(, spdk_fs_request) g_evict_waiter;
 static TAILQ_HEAD(, cache_buffer) g_blank_buffer;
 static void * dma_head;
 
-void blobfs2_init(void)
+int blobfs2_init(void)
 {
 	uint8_t * dma;
 	g_page_size = sysconf(_SC_PAGESIZE);
 	g_nr_buffers = 0;
 	g_nr_dirties = 0;
+	TAILQ_INIT(&g_zeroref_caches);
 	TAILQ_INIT(&g_evict_waiter);
 	if (CACHE_BUFFER_SIZE < g_page_size) {
 		SPDK_WARNLOG("CacheBufferShift should be larger than page shift for this platform. This hurts Blobfs2 performance\n");
@@ -2713,6 +2713,10 @@ void blobfs2_init(void)
 
 	TAILQ_INIT(&g_blank_buffer);
 	dma = spdk_dma_malloc(g_fs_cache_size, g_page_size, NULL);
+	if (!dma) {
+	    SPDK_ERRLOG("failed to spdk_dma_malloc(%lu, %lu, NULL)\n", g_fs_cache_size, g_page_size);
+	    return -ENOMEM;
+	}
 	g_dmasize = 0;
 	while (g_dmasize < g_fs_cache_size) {
 		struct cache_buffer * buf = calloc(1, sizeof(struct cache_buffer));
@@ -2725,6 +2729,7 @@ void blobfs2_init(void)
 		TAILQ_INSERT_TAIL(&g_blank_buffer, buf, zeroref_tailq);
 	}
 	dma_head = dma;
+	return 0;
 }
 
 void blobfs2_shutdown(void)
@@ -2750,16 +2755,12 @@ static struct cache_buffer * blobfs2_alloc_buffer(struct spdk_file * file)
 
 	buf = TAILQ_FIRST(&g_blank_buffer);
 	if (!buf) {
-		TAILQ_FOREACH(buf, &file->zeroref_caches, zeroref_tailq) {
-			if (!buf->dirty) {
-				TAILQ_REMOVE(&file->zeroref_caches, buf, zeroref_tailq);
-				break;
-			}
-		}
-		if (!buf) {
+		buf = TAILQ_FIRST(&g_zeroref_caches);
+		if (buf) {
+			TAILQ_REMOVE(&g_zeroref_caches, buf, zeroref_tailq);
+		} else {
 			return NULL;
 		}
-		// TODO: lookup other files through g_caches if no zeroref cache
 	} else {
 		TAILQ_REMOVE(&g_blank_buffer, buf, zeroref_tailq);
 	}
@@ -2791,15 +2792,15 @@ static void blobfs2_insert_buffer(struct spdk_file *file, struct cache_buffer * 
 static void blobfs2_buffer_up(struct spdk_file * file, struct cache_buffer * buffer)
 {
     if (buffer->ref++ == 0) {
-		TAILQ_REMOVE(&file->zeroref_caches, buffer, zeroref_tailq);
+		TAILQ_REMOVE(&g_zeroref_caches, buffer, zeroref_tailq);
     }
 }
 
 static void blobfs2_put_buffer(struct spdk_file * file, struct cache_buffer * buffer)
 {
 	assert(!buffer->in_progress);
-    if (--buffer->ref == 0) {
-		TAILQ_INSERT_TAIL(&file->zeroref_caches, buffer, zeroref_tailq);
+    if (--buffer->ref == 0 && !buffer->dirty) {
+		TAILQ_INSERT_TAIL(&g_zeroref_caches, buffer, zeroref_tailq);
     }
 }
 
@@ -3014,6 +3015,12 @@ static void __blobfs2_rw_last(struct cache_buffer *buffer, struct spdk_fs_reques
         dreq->args.delayed_fn.write_op(dreq);
     }
 
+	while (!TAILQ_EMPTY(&g_zeroref_caches) && !TAILQ_EMPTY(&g_evict_waiter)) {
+		struct spdk_fs_request * dreq = TAILQ_FIRST(&g_evict_waiter);
+		TAILQ_REMOVE(&g_evict_waiter, dreq, args.op.blobfs2_rw.evict_tailq);
+		dreq->args.delayed_fn.write_op(dreq);
+	}
+
     if (args->sem) {
 		args->rc = rc;
 		sem_post(args->sem);
@@ -3032,12 +3039,6 @@ static void __blobfs2_buffer_flush_done(void * _args, int bserrno)
 	if (bserrno == 0) {
         buffer->dirty = false;
 		--g_nr_dirties;
-
-		while (!TAILQ_EMPTY(&g_evict_waiter)) {
-			struct spdk_fs_request * dreq = TAILQ_FIRST(&g_evict_waiter);
-			TAILQ_REMOVE(&g_evict_waiter, dreq, args.op.blobfs2_rw.evict_tailq);
-			dreq->args.delayed_fn.write_op(dreq);
-		}
     } else {
 		TAILQ_INSERT_TAIL(&file->dirty_buffers, buffer, dirty_tailq);
 	}
@@ -3080,7 +3081,7 @@ static void __blobfs2_flush_buffer_blob_evict_cache(void * _args, int bserrno)
         return;
     }
 
-    nr_evict = (g_nr_buffers * g_dirty_ratio / 100 - g_nr_dirties) * 2;
+    nr_evict = (g_nr_dirties - g_nr_buffers * g_dirty_ratio / 100) * 2;
     if (nr_evict <= 0) {
         __blobfs2_rw_last(NULL, req, 0);
         return;
@@ -3358,6 +3359,9 @@ static void __blobfs2_rw_direct_done(void * _args, int bserrno)
 	struct spdk_fs_cb_args * args = &req->args;
 	uint64_t length = args->op.blobfs2_rw.length;
 
+	if (bserrno) {
+	    SPDK_ERRLOG("failed to write: offset=%lu, length=%lu, bserrno=%d\n", args->op.blobfs2_rw.offset, length, bserrno);
+	}
     if (args->op.blobfs2_rw.is_read) {
 		memcpy(args->op.blobfs2_rw.user_buf, args->op.blobfs2_rw.buffer->buf, length);
     }

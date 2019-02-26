@@ -191,13 +191,20 @@ start_hookfs_fn(void *arg1, void *arg2)
     hookfs_thread2 = pthread_self();
     g_channel = spdk_fs_alloc_io_channel_sync(g_fs);
 
-    blobfs2_init();
+    rc = blobfs2_init();
+    if (rc) {
+        SPDK_ERRLOG("failed to initialize blobfs2\n");
+        realfs.initialized = -1;
+        spdk_smp_rmb();
+        return;
+    }
     realfs.initialized = 1;
     spdk_smp_rmb();
     rc = hookfs_mkdir(dummy, 0755);
     if (rc != 0 && errno != EEXIST) {
         SPDK_ERRLOG("FS init failed: failed to create %s\n", g_mountpoint);
         realfs.initialized = -1;
+        spdk_smp_rmb();
     }
 }
 
