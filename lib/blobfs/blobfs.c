@@ -467,7 +467,7 @@ fs_conf_parse(void)
 		SPDK_WARNLOG("CacheSizeInGB must be > 0\n");
 		g_fs_cache_size = 40;
 	}
-	g_fs_cache_size *= 1024 * 1024 * 1024
+	g_fs_cache_size *= 1024 * 1024 * 1024;
 }
 
 static struct spdk_filesystem *
@@ -2699,7 +2699,6 @@ cache_free_buffers(struct spdk_file *file)
 #define O_DIRECT 1
 #endif
 
-static uint64_t g_dmasize = 0;
 static uint64_t g_page_size;
 static int64_t g_nr_buffers;
 static int64_t g_nr_dirties;
@@ -2728,20 +2727,20 @@ int blobfs2_init(void)
 
 	TAILQ_INIT(&g_blank_buffer);
 	for (i = 0; i < g_fs_cache_size / 1024 / 1024 / 1024; i++) {
+		uint64_t dmasize = 0;
 		uint8_t * dma = spdk_dma_malloc(1024 * 1024 * 1024, g_page_size, NULL);
 		if (!dma) {
-			SPDK_ERRLOG("failed to spdk_dma_malloc(%lu, %lu, NULL)\n", 1024 * 1024 * 1024, g_page_size);
+			SPDK_ERRLOG("failed to spdk_dma_malloc(%lu, %lu, NULL)\n", 1024UL * 1024 * 1024, g_page_size);
 			return -ENOMEM;
 		}
-		g_dmasize = 0;
-		while (g_dmasize < g_fs_cache_size) {
+		while (dmasize < g_fs_cache_size / 1024 / 1024 / 1024) {
 			struct cache_buffer * buf = calloc(1, sizeof(struct cache_buffer));
 			if (!buf) {
 				SPDK_WARNLOG("calloc failed during Blobfs initialization\n");
 				break;
 			}
-			buf->buf = dma + g_dmasize;
-			g_dmasize += CACHE_BUFFER_SIZE;
+			buf->buf = dma + dmasize;
+			dmasize += CACHE_BUFFER_SIZE;
 			TAILQ_INSERT_TAIL(&g_blank_buffer, buf, zeroref_tailq);
 		}
 		dma_head[i] = dma;
@@ -2751,7 +2750,7 @@ int blobfs2_init(void)
 
 void blobfs2_shutdown(void)
 {
-	int i;
+	size_t i;
 	for (i = 0; i < g_fs_cache_size / 1024 / 1024 / 1024; i++) {
 		spdk_dma_free(dma_head[i]);
 	}
