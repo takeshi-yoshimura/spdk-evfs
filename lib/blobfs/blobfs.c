@@ -3138,7 +3138,6 @@ static void __blobfs2_buffered_blob_resize_done(void * _args, int bserrno)
 
 	if (bserrno == 0) {
 	    struct cache_buffer * buffer = args->op.blobfs2_rw.buffer;
-		args->file->length = args->op.blobfs2_rw.offset + args->op.blobfs2_rw.length;
 		if (buffer) {
 		    buffer->in_progress = false;
 		}
@@ -3157,7 +3156,7 @@ static void __blobfs2_flush_buffer_check_resize(void * _args)
 	struct spdk_fs_cb_args * args = &req->args;
 	struct spdk_file *file = args->file;
 	uint64_t nr_clusters = spdk_blob_get_num_clusters(file->blob);
-	uint64_t new_length = args->op.blobfs2_rw.offset + args->op.blobfs2_rw.length;
+	uint64_t new_length = file->length;
 	uint64_t new_nr_clusters = __bytes_to_clusters(new_length, file->fs->bs_opts.cluster_sz);
 
 	if (__blobfs2_blob_is_resizing(file)) {
@@ -3175,6 +3174,7 @@ static void __blobfs2_flush_buffer_check_resize(void * _args)
 	}
 }
 
+static long t_memcpy = 0;
 static void __blobfs2_rw_copy_buffer(void * _args, int bserrno)
 {
     struct spdk_fs_request * req = _args;
@@ -3185,7 +3185,10 @@ static void __blobfs2_rw_copy_buffer(void * _args, int bserrno)
     uint64_t offset = args->op.blobfs2_rw.offset;
     uint64_t length = args->op.blobfs2_rw.length;
     uint64_t buffer_offset = offset - offset % CACHE_BUFFER_SIZE;
+	struct timespec t, t2;
+	long n;
 
+	clock_gettime(CLOCK_MONOTONIC, &t);
     if (bserrno) {
         SPDK_ERRLOG("failed to fetch on-disk data : %d\n", bserrno);
 		__blobfs2_rw_last(buffer, req, -EIO);
@@ -3214,6 +3217,11 @@ static void __blobfs2_rw_copy_buffer(void * _args, int bserrno)
 			TAILQ_INSERT_TAIL(&file->dirty_buffers, buffer, dirty_tailq);
 		}
     }
+	clock_gettime(CLOCK_MONOTONIC, &t2);
+	n = (t2.tv_sec - t.tv_sec) * 1000 * 1000 * 1000 + (t2.tv_nsec - t.tv_nsec);
+	if (n > t_memcpy) {
+		t_memcpy = n;
+	}
 	__blobfs2_rw_last(buffer, req, 0);
 }
 
@@ -3248,8 +3256,6 @@ static int blobfs2_evict_cache(void * _args)
 	subreq->args.file = file;
     subreq->args.sem = NULL;
 	subreq->channel = req->channel;
-	subreq->args.op.blobfs2_rw.offset = 0;
-	subreq->args.op.blobfs2_rw.length = file->length;
 	subreq->args.op.blobfs2_rw.buffer = NULL;
 	subreq->args.op.blobfs2_rw.sync_op = __blobfs2_flush_buffer_blob_evict_cache;
 	subreq->args.op.blobfs2_rw.nr_evict = nr_evict;
@@ -3510,7 +3516,7 @@ static void __blobfs2_rw_resubmit(void * _args)
 	__blobfs2_rw_cb(_args);
 }
 
-// TODO: introduce spinlock for cache buffers to avoid sem_post/sem_wait on cache hit
+//TODO: support >64KB writes
 static int64_t blobfs2_rw(struct spdk_file *file, struct spdk_io_channel * _channel, void * payload, uint64_t offset, uint64_t length, int oflag, bool is_read)
 {
 	struct spdk_fs_channel * channel;
@@ -3920,7 +3926,7 @@ int blobfs2_access(struct spdk_filesystem * fs, struct spdk_io_channel * _channe
 
 void blobfs2_dump_request(void)
 {
-	SPDK_ERRLOG("t_evict = %ld, alloc = %ld\n", t_evict_cache, t_alloc_buffer);
+	SPDK_ERRLOG("evict = %ld, alloc = %ld, memcpy = %ld\n", t_evict_cache, t_alloc_buffer, t_memcpy);
 }
 
 SPDK_LOG_REGISTER_COMPONENT("blobfs", SPDK_LOG_BLOBFS)
