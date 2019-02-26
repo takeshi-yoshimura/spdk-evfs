@@ -231,7 +231,7 @@ spdk_fs_opts_init(struct spdk_blobfs_opts *opts)
 {
 	opts->cluster_sz = SPDK_BLOBFS_DEFAULT_OPTS_CLUSTER_SZ;
 }
-
+#if 0
 static void
 __initialize_cache(void)
 {
@@ -250,6 +250,7 @@ __initialize_cache(void)
 	TAILQ_INIT(&g_caches);
 	pthread_spin_init(&g_caches_lock, 0);
 }
+#endif
 
 static void
 __free_cache(void)
@@ -414,9 +415,9 @@ common_fs_bs_init(struct spdk_filesystem *fs, struct spdk_blob_store *bs)
 	fs->sync_target.sync_fs_channel->send_request = __send_request_direct;
 
 	pthread_mutex_lock(&g_cache_init_lock);
-	if (g_fs_count == 0) {
+/*	if (g_fs_count == 0) {
 		__initialize_cache();
-	}
+	}*/
 	g_fs_count++;
 	pthread_mutex_unlock(&g_cache_init_lock);
 }
@@ -460,6 +461,13 @@ fs_conf_parse(void)
 		SPDK_WARNLOG("DirtyRatio must be > 1 and < 99\n");
 		g_dirty_ratio = 20;
 	}
+
+	g_fs_cache_size = spdk_conf_section_get_intval(sp, "CacheSizeInGB");
+	if (g_fs_cache_size <= 0) {
+		SPDK_WARNLOG("CacheSizeInGB must be > 0\n");
+		g_fs_cache_size = 40;
+	}
+	g_fs_cache_size *= 1024 * 1024 * 1024
 }
 
 static struct spdk_filesystem *
@@ -2698,11 +2706,12 @@ static int64_t g_nr_dirties;
 static TAILQ_HEAD(, cache_buffer) g_zeroref_caches;
 static TAILQ_HEAD(, spdk_fs_request) g_evict_waiter;
 static TAILQ_HEAD(, cache_buffer) g_blank_buffer;
-static void * dma_head;
+static void ** dma_head;
 
 int blobfs2_init(void)
 {
-	uint8_t * dma;
+	size_t i;
+
 	g_page_size = sysconf(_SC_PAGESIZE);
 	g_nr_buffers = 0;
 	g_nr_dirties = 0;
@@ -2712,30 +2721,41 @@ int blobfs2_init(void)
 		SPDK_WARNLOG("CacheBufferShift should be larger than page shift for this platform. This hurts Blobfs2 performance\n");
 	}
 
+	dma_head = calloc(1, sizeof(void *));
+	if (!dma_head) {
+		return -ENOMEM;
+	}
+
 	TAILQ_INIT(&g_blank_buffer);
-	dma = spdk_dma_malloc(g_fs_cache_size, g_page_size, NULL);
-	if (!dma) {
-	    SPDK_ERRLOG("failed to spdk_dma_malloc(%lu, %lu, NULL)\n", g_fs_cache_size, g_page_size);
-	    return -ENOMEM;
-	}
-	g_dmasize = 0;
-	while (g_dmasize < g_fs_cache_size) {
-		struct cache_buffer * buf = calloc(1, sizeof(struct cache_buffer));
-		if (!buf) {
-			SPDK_WARNLOG("calloc failed during Blobfs initialization\n");
-			break;
+	for (i = 0; i < g_fs_cache_size / 1024 / 1024 / 1024; i++) {
+		uint8_t * dma = spdk_dma_malloc(1024 * 1024 * 1024, g_page_size, NULL);
+		if (!dma) {
+			SPDK_ERRLOG("failed to spdk_dma_malloc(%lu, %lu, NULL)\n", 1024 * 1024 * 1024, g_page_size);
+			return -ENOMEM;
 		}
-		buf->buf = dma + g_dmasize;
-		g_dmasize += CACHE_BUFFER_SIZE;
-		TAILQ_INSERT_TAIL(&g_blank_buffer, buf, zeroref_tailq);
+		g_dmasize = 0;
+		while (g_dmasize < g_fs_cache_size) {
+			struct cache_buffer * buf = calloc(1, sizeof(struct cache_buffer));
+			if (!buf) {
+				SPDK_WARNLOG("calloc failed during Blobfs initialization\n");
+				break;
+			}
+			buf->buf = dma + g_dmasize;
+			g_dmasize += CACHE_BUFFER_SIZE;
+			TAILQ_INSERT_TAIL(&g_blank_buffer, buf, zeroref_tailq);
+		}
+		dma_head[i] = dma;
 	}
-	dma_head = dma;
 	return 0;
 }
 
 void blobfs2_shutdown(void)
 {
-	spdk_dma_free(dma_head);
+	int i;
+	for (i = 0; i < g_fs_cache_size / 1024 / 1024 / 1024; i++) {
+		spdk_dma_free(dma_head[i]);
+	}
+	free(dma_head);
 }
 
 static void __blobfs2_wake_caller(void * _args, int rc)
@@ -2792,7 +2812,7 @@ static void blobfs2_insert_buffer(struct spdk_file *file, struct cache_buffer * 
 
 static void blobfs2_buffer_up(struct spdk_file * file, struct cache_buffer * buffer)
 {
-    if (buffer->ref++ == 0) {
+    if (buffer->ref++ == 0 && !buffer->dirty) {
 		TAILQ_REMOVE(&g_zeroref_caches, buffer, zeroref_tailq);
     }
 }
@@ -3082,6 +3102,7 @@ static void __blobfs2_flush_buffer_blob_evict_cache(void * _args, int bserrno)
     int rc;
 
     if (bserrno) {
+    	SPDK_WARNLOG("failed to resize to file->length=%lu: %d\n", file->length, bserrno);
 		g_nr_dirties += nr_remaining_evict;
         __blobfs2_rw_last(NULL, req, bserrno);
         return;
@@ -3131,6 +3152,7 @@ static void __blobfs2_flush_buffer_blob_evict_cache(void * _args, int bserrno)
 
 static void __blobfs2_flush_buffer_check_resize(void * _args);
 
+long g_nr_resize = 0;
 static void __blobfs2_buffered_blob_resize_done(void * _args, int bserrno)
 {
 	struct spdk_fs_request * req = _args;
@@ -3146,7 +3168,8 @@ static void __blobfs2_buffered_blob_resize_done(void * _args, int bserrno)
     if (!TAILQ_EMPTY(&req->args.file->resize_waiter)) {
         struct spdk_fs_request * dreq = TAILQ_FIRST(&req->args.file->resize_waiter);
         TAILQ_REMOVE(&req->args.file->resize_waiter, dreq, args.op.blobfs2_rw.resize_tailq);
-        __blobfs2_flush_buffer_check_resize(dreq);
+		req->channel->send_request(__blobfs2_flush_buffer_check_resize, dreq);
+//		__blobfs2_flush_buffer_check_resize(dreq);
     }
 }
 
@@ -3168,6 +3191,7 @@ static void __blobfs2_flush_buffer_check_resize(void * _args)
 
 	if (new_nr_clusters > nr_clusters) {
 		spdk_blob_resize(file->blob, new_nr_clusters, __blobfs2_buffered_blob_resize_done, req);
+		++g_nr_resize;
 	} else {
 		// no need to expand blob. update in-memory metadata only
         __blobfs2_buffered_blob_resize_done(_args, 0);
@@ -3260,7 +3284,8 @@ static int blobfs2_evict_cache(void * _args)
 	subreq->args.op.blobfs2_rw.sync_op = __blobfs2_flush_buffer_blob_evict_cache;
 	subreq->args.op.blobfs2_rw.nr_evict = nr_evict;
     TAILQ_INSERT_TAIL(&file->sync_requests, subreq, args.op.blobfs2_rw.sync_tailq);
-    __blobfs2_flush_buffer_check_resize(subreq);
+    req->channel->send_request(__blobfs2_flush_buffer_check_resize, subreq);
+//    __blobfs2_flush_buffer_check_resize(subreq);
 
 	clock_gettime(CLOCK_MONOTONIC, &t2);
 	n = (t2.tv_sec - t.tv_sec) * 1000 * 1000 * 1000 + (t2.tv_nsec - t.tv_nsec);
@@ -3338,6 +3363,10 @@ static void __blobfs2_rw_buffered(void * _args)
 		blob_size = file->length;
 	}
 
+	if (!args->op.blobfs2_rw.is_read && offset % CACHE_BUFFER_SIZE == 0 && length % CACHE_BUFFER_SIZE == 0) {
+		__blobfs2_rw_copy_buffer(req, 0);
+		return;
+	}
 	if (buffer_offset < blob_size) {
 		// fetch on-disk data
 		uint64_t len;

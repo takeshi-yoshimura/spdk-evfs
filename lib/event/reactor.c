@@ -220,12 +220,12 @@ _spdk_reactor_get_max_event_cnt(uint8_t socket_count)
 {
 	size_t cnt;
 
-	/* Try to make event ring fill at most 2MB of memory,
+	/* Try to make event ring fill at most 1GB of memory,
 	 * as some ring implementations may require physical address
 	 * contingency. We don't want to introduce a requirement of
-	 * at least 2 physically contiguous 2MB hugepages.
+	 * at least 2 physically contiguous 1GB hugepages.
 	 */
-	cnt = spdk_min(262144 / socket_count, 262144 / 2);
+	cnt = spdk_min(134217728 / socket_count, 134217728 / 2);
 	/* Take into account one extra element required by
 	 * some ring implementations.
 	 */
@@ -382,12 +382,12 @@ spdk_reactor_construct(struct spdk_reactor *reactor, uint32_t lcore, uint64_t ma
 	assert(reactor->socket_id < SPDK_MAX_SOCKET);
 	reactor->max_delay_us = max_delay_us;
 
-	reactor->events = spdk_ring_create(SPDK_RING_TYPE_MP_SC, 65536, reactor->socket_id);
+	reactor->events = spdk_ring_create(SPDK_RING_TYPE_MP_SC, 1073741824, reactor->socket_id);
 	if (!reactor->events) {
 		SPDK_NOTICELOG("Ring creation failed on preferred socket %d. Try other sockets.\n",
 			       reactor->socket_id);
 
-		reactor->events = spdk_ring_create(SPDK_RING_TYPE_MP_SC, 65536,
+		reactor->events = spdk_ring_create(SPDK_RING_TYPE_MP_SC, 1073741824,
 						   SPDK_ENV_SOCKET_ID_ANY);
 	}
 	assert(reactor->events != NULL);

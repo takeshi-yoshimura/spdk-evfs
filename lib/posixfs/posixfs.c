@@ -311,7 +311,7 @@ static void * start_app(void * args) {
     opts.name = program_invocation_short_name;
     opts.config_file = getenv(HOOKFS_SPDK_CONF_ENV);
     opts.reactor_mask = "0x3";
-    opts.mem_size = 20 * 1024;
+    opts.mem_size = 100 * 1024;
     opts.shutdown_cb = hookfs_shutdown;
 
     if (g_logstr) {
