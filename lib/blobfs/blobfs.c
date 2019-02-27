@@ -50,11 +50,10 @@
 #define BLOBFS_TRACE_RW(file, str, args...) \
 	SPDK_DEBUGLOG(SPDK_LOG_BLOBFS_RW, "file=%s " str, file->name, ##args)
 
-#define BLOBFS_DEFAULT_CACHE_SIZE (4ULL * 1024 * 1024 * 1024)
+#define BLOBFS_DEFAULT_CACHE_SIZE_IN_GB (4)
 #define SPDK_BLOBFS_DEFAULT_OPTS_CLUSTER_SZ (1024 * 1024)
 
-static uint64_t g_fs_cache_size = BLOBFS_DEFAULT_CACHE_SIZE;
-static uint64_t g_thread_cache_size = BLOBFS_DEFAULT_CACHE_SIZE;
+static int g_fs_cache_size_in_gb = BLOBFS_DEFAULT_CACHE_SIZE_IN_GB;
 static struct spdk_mempool *g_cache_pool;
 static TAILQ_HEAD(, spdk_file) g_caches;
 static int g_fs_count = 0;
@@ -239,7 +238,7 @@ __initialize_cache(void)
 	assert(g_cache_pool == NULL);
 
 	g_cache_pool = spdk_mempool_create("spdk_fs_cache",
-					   g_fs_cache_size / CACHE_BUFFER_SIZE,
+					   g_fs_cache_size_in_gb / CACHE_BUFFER_SIZE,
 					   CACHE_BUFFER_SIZE,
 					   SPDK_MEMPOOL_DEFAULT_CACHE_SIZE,
 					   SPDK_ENV_SOCKET_ID_ANY);
@@ -475,19 +474,11 @@ fs_conf_parse(void)
 		g_dirty_ratio = 20;
 	}
 
-	g_fs_cache_size = spdk_conf_section_get_intval(sp, "FSCacheSizeInGB");
-	if (g_fs_cache_size <= 0) {
+	g_fs_cache_size_in_gb = spdk_conf_section_get_intval(sp, "CacheSizeInGB");
+	if (g_fs_cache_size_in_gb <= 0) {
 		SPDK_WARNLOG("CacheSizeInGB must be > 0\n");
-		g_fs_cache_size = 40;
+        g_fs_cache_size_in_gb = 40;
 	}
-	g_fs_cache_size *= 1024 * 1024 * 1024;
-
-	g_thread_cache_size = spdk_conf_section_get_intval(sp, "ThreadCacheSizeInGB");
-	if (g_thread_cache_size <= 0) {
-		SPDK_WARNLOG("ThreadCacheSizeInGB must be > 0\n");
-		g_fs_cache_size = 40;
-	}
-	g_thread_cache_size *= 1024 * 1024 * 1024;
 }
 
 static struct spdk_filesystem *
@@ -1811,13 +1802,13 @@ spdk_fs_free_io_channel(struct spdk_io_channel *channel)
 void
 spdk_fs_set_cache_size(uint64_t size_in_mb)
 {
-	g_fs_cache_size = size_in_mb * 1024 * 1024;
+	g_fs_cache_size_in_gb = size_in_mb / 1024;
 }
 
 uint64_t
 spdk_fs_get_cache_size(void)
 {
-	return g_fs_cache_size / (1024 * 1024);
+	return g_fs_cache_size_in_gb * 1024 * 1024 * 1024;
 }
 
 static void __file_flush(void *_args);
@@ -2741,17 +2732,17 @@ int blobfs2_init(void)
 		SPDK_WARNLOG("CacheBufferShift should be larger than page shift for this platform. This hurts Blobfs2 performance\n");
 	}
 
-	dma_head = calloc(g_fs_cache_size / 1024 / 1024 / 1024, sizeof(void *));
+	dma_head = calloc(g_fs_cache_size_in_gb, sizeof(void *));
 	if (!dma_head) {
 		return -ENOMEM;
 	}
 
 	TAILQ_INIT(&g_blank_buffer);
-	for (i = 0; i < g_fs_cache_size / 1024 / 1024 / 1024; i++) {
+	for (i = 0; i < g_fs_cache_size_in_gb; i++) {
 		uint64_t dmasize = 0;
 		uint8_t * dma = spdk_dma_malloc(1024 * 1024 * 1024, g_page_size, NULL);
 		if (!dma) {
-			SPDK_ERRLOG("failed to spdk_dma_malloc(%lu, %lu, NULL)\n", 1024UL * 1024 * 1024, g_page_size);
+            SPDK_ERRLOG("failed to spdk_dma_malloc(%lu, %lu, NULL) after allocated %ld GB memory\n", 1024UL * 1024 * 1024, g_page_size, i);
 			return -ENOMEM;
 		}
 		for (dmasize = 0; dmasize < 1024 * 1024 * 1024; dmasize += CACHE_BUFFER_SIZE) {
@@ -2771,7 +2762,7 @@ int blobfs2_init(void)
 void blobfs2_shutdown(void)
 {
 	size_t i;
-	for (i = 0; i < g_fs_cache_size / 1024 / 1024 / 1024; i++) {
+	for (i = 0; i < g_fs_cache_size_in_gb; i++) {
 		spdk_dma_free(dma_head[i]);
 	}
 	free(dma_head);
