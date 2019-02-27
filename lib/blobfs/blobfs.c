@@ -3917,7 +3917,7 @@ static void blobfs2_create_blob_create_cb(void *ctx, spdk_blob_id blobid, int bs
     spdk_bs_open_blob(f->fs->bs, blobid, blobfs2_create_blob_open_cb, req);
 }
 
-void blobfs2_create_file_async(struct spdk_filesystem *fs, const char *name,
+static void blobfs2_create_file_async(struct spdk_filesystem *fs, const char *name,
                           spdk_file_op_complete cb_fn, void *cb_arg)
 {
     struct spdk_file *file;
@@ -4053,7 +4053,7 @@ static void blobfs2_open_blob_create_cb(void *ctx, int bserrno)
     }
 }
 
-void blobfs2_open_async(struct spdk_filesystem *fs, const char *name, uint32_t flags,
+static void blobfs2_open_async(struct spdk_filesystem *fs, const char *name, uint32_t flags,
                         spdk_file_op_with_handle_complete cb_fn, void *cb_arg)
 {
     struct spdk_file *f = NULL;
@@ -4164,7 +4164,7 @@ static void blobfs2_blob_delete_cb(void *ctx, int bserrno)
 	blobfs2_free_fs_request(req);
 }
 
-void blobfs2_delete_file_async(struct spdk_filesystem *fs, const char *name,
+static void blobfs2_delete_file_async(struct spdk_filesystem *fs, const char *name,
 						  spdk_file_op_complete cb_fn, void *cb_arg)
 {
 	struct spdk_file *f;
@@ -4276,7 +4276,7 @@ int blobfs2_close(struct spdk_file * file, struct spdk_io_channel * _channel)
 	struct spdk_fs_request * req;
 	struct spdk_fs_cb_args * args;
 
-	req = blobfs2_alloc_fs_request(channel);
+	req = blobfs2_alloc_fs_request(channel, false);
 	if (req == NULL) {
 		return -ENOMEM;
 	}
