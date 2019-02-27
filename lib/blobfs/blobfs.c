@@ -142,6 +142,7 @@ struct spdk_fs_cb_args {
 	} delayed_fn;
 	void *arg;
 	sem_t *sem;
+	int cond;
 	struct spdk_filesystem *fs;
 	struct spdk_file *file;
 	int rc;
@@ -3117,7 +3118,10 @@ static void __blobfs2_rw_last(struct cache_buffer *buffer, struct spdk_fs_reques
 		dreq->args.delayed_fn.write_op(dreq);
 	}
 
-    if (args->sem) {
+	if (args->cond > 0) {
+		args->cond = 0;
+		spdk_smp_rmb();
+	} else if (args->sem) {
 		args->rc = rc;
 		sem_post(args->sem);
 	} else {
@@ -3663,11 +3667,15 @@ static int64_t blobfs2_rw(struct spdk_file *file, struct spdk_io_channel * _chan
 	req->args.op.blobfs2_rw.delayed = false;
 	req->args.fn.file_op = NULL;
 	req->args.op.blobfs2_rw.need_free_ubuf = !waitrc;
-	req->args.sem = waitrc ? &channel->sem: NULL;
+	req->args.sem = NULL; //waitrc ? &channel->sem: NULL;
+	req->args.cond = waitrc ? 1: 0;
 
 	channel->send_request(__blobfs2_rw_cb, req);
 	if (waitrc) {
-		sem_wait(&channel->sem);
+		while (req->args.cond > 0) {
+			usleep(1);
+		}
+		//sem_wait(&channel->sem);
 		rc = req->args.op.blobfs2_rw.length;
 		blobfs2_free_fs_request(req);
 	} else {
