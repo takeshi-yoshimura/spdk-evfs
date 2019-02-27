@@ -564,7 +564,7 @@ static int __hookfs_deletefile(const char * blobfspath) {
 
     if (off > 0) {
         rc = blobfs2_write(file, g_channel, buf, 0, off, false);
-        if (rc) {
+        if (rc < 0) {
             errno = EIO;
             rc = -1;
             goto close_file;
@@ -574,7 +574,7 @@ static int __hookfs_deletefile(const char * blobfspath) {
     uint64_t o2 = off + 1 + strlen(base) + 1;
     if (o2 < stat.size) {
         rc = blobfs2_write(file, g_channel, buf + o2, off, stat.size - o2, false);
-        if (rc) {
+        if (rc < 0) {
             errno = EIO;
             rc = -1;
             goto close_file;
@@ -702,7 +702,7 @@ static int __hookfs_addfile(const char * blobfspath, const char *filename, unsig
     snprintf(buf, PATH_MAX - 1, "%c%s%c", (char)d_type, filename, 0);
 //    SPDK_ERRLOG("addfile: %s, %u, %lu, %lu in %s\n", filename, d_type, stat.size, strlen(buf) + 1, blobfspath);
     rc = blobfs2_write(file, g_channel, (void *)buf, stat.size, strlen(buf) + 1, false);
-    if (rc != 0) {
+    if (rc < 0) {
         blobfs2_close(file, g_channel);
         return -rc;
     }
@@ -1018,8 +1018,8 @@ static int hookfs_pwrite(hookfs_fd_t * fd, const char * buf, size_t len, uint64_
     }
 
     rc = blobfs2_write(file, g_channel, (void *)buf, offset, len, oflag & O_DIRECT);
-    if (rc == 0) {
-        return (int)len;
+    if (rc >= 0) {
+        return rc;
     } else {
         errno = -rc;
         return -1;
@@ -1048,11 +1048,11 @@ static int hookfs_write(hookfs_fd_t * fd, const char * buf, size_t len) {
     }
 
     rc = blobfs2_write(file, g_channel, (void *)buf, off, len, oflag & O_DIRECT);
-    if (rc == 0) {
+    if (rc >= 0) {
         pthread_rwlock_wrlock(&fd->lock);
         fd->offset += len;
         pthread_rwlock_unlock(&fd->lock);
-        return (int)len;
+        return rc;
     } else {
         errno = -rc;
         return -1;
