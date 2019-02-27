@@ -228,6 +228,9 @@ uint64_t blobfs2_fstat_unsafe(struct spdk_file * file);
 int spdk_fs_create_file(struct spdk_filesystem *fs, struct spdk_io_channel *channel,
 			const char *name);
 
+int blobfs2_create_file(struct spdk_filesystem *fs, struct spdk_io_channel *channel,
+			const char *name);
+
 /**
  * Open the file.
  *
@@ -242,6 +245,8 @@ int spdk_fs_create_file(struct spdk_filesystem *fs, struct spdk_io_channel *chan
 int spdk_fs_open_file(struct spdk_filesystem *fs, struct spdk_io_channel *channel,
 		      const char *name, uint32_t flags, struct spdk_file **file);
 
+int blobfs2_open(struct spdk_filesystem *fs, struct spdk_io_channel *channel,
+					  const char *name, uint32_t flags, struct spdk_file **file);
 /**
  * Close the file.
  *

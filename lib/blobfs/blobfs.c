@@ -2876,15 +2876,17 @@ static struct spdk_fs_request * blobfs2_alloc_fs_request(struct spdk_fs_channel 
     if (need_ubuf && !h) {
         void * page = calloc(1, CACHE_BUFFER_SIZE);
         h = calloc(1, sizeof(struct channel_heap));
-        if ((!h || !page) && req) {
+        if (!h || !page) {
             free(h);
             free(page);
-            if (channel->sync) {
-                pthread_spin_lock(&channel->lock);
-            }
-            TAILQ_INSERT_TAIL(&channel->reqs, req, link);
-            if (channel->sync) {
-                pthread_spin_unlock(&channel->lock);
+            if (req) {
+                if (channel->sync) {
+                    pthread_spin_lock(&channel->lock);
+                }
+                TAILQ_INSERT_TAIL(&channel->reqs, req, link);
+                if (channel->sync) {
+                    pthread_spin_unlock(&channel->lock);
+                }
             }
             return NULL;
         }
@@ -2894,7 +2896,6 @@ static struct spdk_fs_request * blobfs2_alloc_fs_request(struct spdk_fs_channel 
     if (req) {
         memset(req, 0, sizeof(*req));
         req->channel = channel;
-        req->args.from_request = true;
         if (need_ubuf) {
             req->args.op.blobfs2_rw.user_buf = h;
         }
@@ -2916,7 +2917,6 @@ static struct spdk_fs_request * blobfs2_alloc_fs_request(struct spdk_fs_channel 
 static void blobfs2_free_fs_request(struct spdk_fs_request * req)
 {
     struct spdk_fs_channel *channel = req->channel;
-    bool from_req = req->args.from_request;
     bool free_heap = req->args.op.blobfs2_rw.need_free_ubuf;
 
     if (channel->sync) {
@@ -2927,9 +2927,7 @@ static void blobfs2_free_fs_request(struct spdk_fs_request * req)
         TAILQ_INSERT_TAIL(&channel->heaps, req->args.op.blobfs2_rw.user_buf, link);
         req->args.op.blobfs2_rw.user_buf = NULL;
     }
-    if (from_req) {
-        TAILQ_INSERT_HEAD(&channel->reqs, req, link);
-    }
+    TAILQ_INSERT_HEAD(&channel->reqs, req, link);
     if (channel->sync) {
         pthread_spin_unlock(&channel->lock);
     }
@@ -3245,7 +3243,7 @@ static void __blobfs2_buffered_blob_resize_done(void * _args, int bserrno)
     if (!TAILQ_EMPTY(&req->args.file->resize_waiter)) {
         struct spdk_fs_request * dreq = TAILQ_FIRST(&req->args.file->resize_waiter);
         TAILQ_REMOVE(&req->args.file->resize_waiter, dreq, args.op.blobfs2_rw.resize_tailq);
-        args->file->fs->md_target.md_fs_channel->send_request(__blobfs2_flush_buffer_check_resize, dreq);
+        req->channel->send_request(__blobfs2_flush_buffer_check_resize, dreq);
 //		__blobfs2_flush_buffer_check_resize(dreq);
     }
 }
@@ -3282,7 +3280,7 @@ static void __blobfs2_rw_copy_buffer(void * _args, int bserrno)
     struct spdk_fs_cb_args * args = &req->args;
     struct spdk_file * file = args->file;
     struct cache_buffer * buffer = args->op.blobfs2_rw.buffer;
-    void * payload = args->op.blobfs2_rw.user_buf->page;
+    void * payload = args->op.blobfs2_rw.need_free_ubuf ? args->op.blobfs2_rw.user_buf->page: args->op.blobfs2_rw.user_buf;
     uint64_t offset = args->op.blobfs2_rw.offset;
     uint64_t length = args->op.blobfs2_rw.length;
     uint64_t buffer_offset = offset - offset % CACHE_BUFFER_SIZE;
@@ -3361,7 +3359,7 @@ static int blobfs2_evict_cache(void * _args)
 	subreq->args.op.blobfs2_rw.sync_op = __blobfs2_flush_buffer_blob_evict_cache;
 	subreq->args.op.blobfs2_rw.nr_evict = nr_evict;
     TAILQ_INSERT_TAIL(&file->sync_requests, subreq, args.op.blobfs2_rw.sync_tailq);
-    file->fs->md_target.md_fs_channel->send_request(__blobfs2_flush_buffer_check_resize, subreq);
+    req->channel->send_request(__blobfs2_flush_buffer_check_resize, subreq);
 //    __blobfs2_flush_buffer_check_resize(subreq);
 
 	clock_gettime(CLOCK_MONOTONIC, &t2);
@@ -3669,7 +3667,7 @@ static int64_t blobfs2_rw(struct spdk_file *file, struct spdk_io_channel * _chan
 	req->args.op.blobfs2_rw.is_read = is_read;
 	req->args.op.blobfs2_rw.delayed = false;
 	req->args.fn.file_op = NULL;
-	req->args.op.blobfs2_rw.need_free_ubuf = waitrc;
+	req->args.op.blobfs2_rw.need_free_ubuf = !waitrc;
 	req->args.sem = waitrc ? &channel->sem: NULL;
 
 	channel->send_request(__blobfs2_rw_cb, req);
@@ -3857,13 +3855,428 @@ int blobfs2_barrier(struct spdk_file * file, struct spdk_io_channel * _channel) 
 	return rc;
 }
 
+static void blobfs2_create_blob_close_cb(void *ctx, int bserrno)
+{
+    int rc;
+    struct spdk_fs_request *req = ctx;
+    struct spdk_fs_cb_args *args = &req->args;
+
+    rc = args->rc ? args->rc : bserrno;
+    args->fn.file_op(args->arg, rc);
+    blobfs2_free_fs_request(req);
+}
+
+static void blobfs2_create_blob_resize_cb(void *ctx, int bserrno)
+{
+    struct spdk_fs_request *req = ctx;
+    struct spdk_fs_cb_args *args = &req->args;
+    struct spdk_file *f = args->file;
+    struct spdk_blob *blob = args->op.create.blob;
+    uint64_t length = 0;
+
+    args->rc = bserrno;
+    if (bserrno) {
+        spdk_blob_close(blob, blobfs2_create_blob_close_cb, args);
+        return;
+    }
+
+    spdk_blob_set_xattr(blob, "name", f->name, strlen(f->name) + 1);
+    spdk_blob_set_xattr(blob, "length", &length, sizeof(length));
+
+    spdk_blob_close(blob, blobfs2_create_blob_close_cb, args);
+}
+
+static void blobfs2_create_blob_open_cb(void *ctx, struct spdk_blob *blob, int bserrno)
+{
+    struct spdk_fs_request *req = ctx;
+    struct spdk_fs_cb_args *args = &req->args;
+
+    if (bserrno) {
+        args->fn.file_op(args->arg, bserrno);
+        blobfs2_free_fs_request(req);
+        return;
+    }
+
+    args->op.create.blob = blob;
+    spdk_blob_resize(blob, 1, blobfs2_create_blob_resize_cb, req);
+}
+
+static void blobfs2_create_blob_create_cb(void *ctx, spdk_blob_id blobid, int bserrno)
+{
+    struct spdk_fs_request *req = ctx;
+    struct spdk_fs_cb_args *args = &req->args;
+    struct spdk_file *f = args->file;
+
+    if (bserrno) {
+        args->fn.file_op(args->arg, bserrno);
+        blobfs2_free_fs_request(req);
+        return;
+    }
+
+    f->blobid = blobid;
+    spdk_bs_open_blob(f->fs->bs, blobid, blobfs2_create_blob_open_cb, req);
+}
+
+void blobfs2_create_file_async(struct spdk_filesystem *fs, const char *name,
+                          spdk_file_op_complete cb_fn, void *cb_arg)
+{
+    struct spdk_file *file;
+    struct spdk_fs_request *req;
+    struct spdk_fs_cb_args *args;
+
+    if (strnlen(name, SPDK_FILE_NAME_MAX + 1) == SPDK_FILE_NAME_MAX + 1) {
+        cb_fn(cb_arg, -ENAMETOOLONG);
+        return;
+    }
+
+    file = fs_find_file(fs, name);
+    if (file != NULL) {
+        cb_fn(cb_arg, -EEXIST);
+        return;
+    }
+
+    file = file_alloc(fs);
+    if (file == NULL) {
+        cb_fn(cb_arg, -ENOMEM);
+        return;
+    }
+
+    req = blobfs2_alloc_fs_request(fs->md_target.md_fs_channel, false);
+    if (req == NULL) {
+        cb_fn(cb_arg, -ENOMEM);
+        return;
+    }
+
+    args = &req->args;
+    args->file = file;
+    args->fn.file_op = cb_fn;
+    args->arg = cb_arg;
+
+    file->name = strdup(name);
+    spdk_bs_create_blob(fs->bs, blobfs2_create_blob_create_cb, args);
+}
+
+static void
+__blobfs2_create_file_done(void *arg, int fserrno)
+{
+    struct spdk_fs_request *req = arg;
+    struct spdk_fs_cb_args *args = &req->args;
+
+    args->rc = fserrno;
+    sem_post(args->sem);
+    SPDK_DEBUGLOG(SPDK_LOG_BLOBFS, "file=%s\n", args->op.create.name);
+}
+
+static void __blobfs2_create_file_cb(void *arg)
+{
+    struct spdk_fs_request *req = arg;
+    struct spdk_fs_cb_args *args = &req->args;
+
+    SPDK_DEBUGLOG(SPDK_LOG_BLOBFS, "file=%s\n", args->op.create.name);
+    blobfs2_create_file_async(args->fs, args->op.create.name, __blobfs2_create_file_done, req);
+}
+
+int blobfs2_create_file(struct spdk_filesystem *fs, struct spdk_io_channel *_channel, const char *name)
+{
+    struct spdk_fs_channel *channel = spdk_io_channel_get_ctx(_channel);
+    struct spdk_fs_request *req;
+    struct spdk_fs_cb_args *args;
+    int rc;
+
+    SPDK_DEBUGLOG(SPDK_LOG_BLOBFS, "file=%s\n", name);
+
+    req = blobfs2_alloc_fs_request(channel, false);
+    if (req == NULL) {
+        return -ENOMEM;
+    }
+
+    args = &req->args;
+    args->fs = fs;
+    args->op.create.name = name;
+    args->sem = &channel->sem;
+    fs->send_request(__blobfs2_create_file_cb, req);
+    sem_wait(&channel->sem);
+    rc = args->rc;
+    blobfs2_free_fs_request(req);
+
+    return rc;
+}
+
+
+static void blobfs2_open_blob_done(void *ctx, struct spdk_blob *blob, int bserrno)
+{
+    struct spdk_fs_request *req = ctx;
+    struct spdk_fs_cb_args *args = &req->args;
+    struct spdk_file *f = args->file;
+
+    f->blob = blob;
+    while (!TAILQ_EMPTY(&f->open_requests)) {
+        req = TAILQ_FIRST(&f->open_requests);
+        args = &req->args;
+        TAILQ_REMOVE(&f->open_requests, req, args.op.open.tailq);
+        args->fn.file_op_with_handle(args->arg, f, bserrno);
+        blobfs2_free_fs_request(req);
+    }
+}
+
+static void blobfs2_open_blob_create_cb(void *ctx, int bserrno)
+{
+    struct spdk_fs_request *req = ctx;
+    struct spdk_fs_cb_args *args = &req->args;
+    struct spdk_file *file = args->file;
+    struct spdk_filesystem *fs = args->fs;
+
+    if (file == NULL) {
+        /*
+         * This is from an open with CREATE flag - the file
+         *  is now created so look it up in the file list for this
+         *  filesystem.
+         */
+        file = fs_find_file(fs, args->op.open.name);
+        assert(file != NULL);
+        args->file = file;
+    }
+
+    file->ref_count++;
+    TAILQ_INSERT_TAIL(&file->open_requests, req, args.op.open.tailq);
+    if (file->ref_count == 1) {
+        assert(file->blob == NULL);
+        spdk_bs_open_blob(fs->bs, file->blobid, blobfs2_open_blob_done, req);
+    } else if (file->blob != NULL) {
+        blobfs2_open_blob_done(req, file->blob, 0);
+    } else {
+        /*
+         * The blob open for this file is in progress due to a previous
+         *  open request.  When that open completes, it will invoke the
+         *  open callback for this request.
+         */
+    }
+}
+
+void blobfs2_open_async(struct spdk_filesystem *fs, const char *name, uint32_t flags,
+                        spdk_file_op_with_handle_complete cb_fn, void *cb_arg)
+{
+    struct spdk_file *f = NULL;
+    struct spdk_fs_request *req;
+    struct spdk_fs_cb_args *args;
+
+    if (strnlen(name, SPDK_FILE_NAME_MAX + 1) == SPDK_FILE_NAME_MAX + 1) {
+        cb_fn(cb_arg, NULL, -ENAMETOOLONG);
+        return;
+    }
+
+    f = fs_find_file(fs, name);
+    if (f == NULL && !(flags & O_CREAT)) {
+        cb_fn(cb_arg, NULL, -ENOENT);
+        return;
+    }
+
+    if (f != NULL && f->is_deleted == true && (flags & O_CREAT)) {
+        cb_fn(cb_arg, NULL, -ENOENT);
+        return;
+    }
+
+    if (f != NULL && f->is_deleted == false && (flags & (O_CREAT | O_EXCL))) {
+        cb_fn(cb_arg, NULL, -EEXIST);
+        return;
+    }
+
+    req = blobfs2_alloc_fs_request(fs->md_target.md_fs_channel, false);
+    if (req == NULL) {
+        cb_fn(cb_arg, NULL, -ENOMEM);
+        return;
+    }
+
+    args = &req->args;
+    args->fn.file_op_with_handle = cb_fn;
+    args->arg = cb_arg;
+    args->file = f;
+    args->fs = fs;
+    args->op.open.name = name;
+
+    if (f == NULL && (flags & O_CREAT)) {
+        blobfs2_create_file_async(fs, name, blobfs2_open_blob_create_cb, req);
+    } else {
+        blobfs2_open_blob_create_cb(req, 0);
+    }
+}
+
+static void
+__blobfs2_open_done(void *arg, struct spdk_file *file, int bserrno)
+{
+    struct spdk_fs_request *req = arg;
+    struct spdk_fs_cb_args *args = &req->args;
+
+    args->file = file;
+    __wake_caller(args, bserrno);
+    SPDK_DEBUGLOG(SPDK_LOG_BLOBFS, "file=%s\n", args->op.open.name);
+}
+
+static void __blobfs2_open_cb(void *arg)
+{
+    struct spdk_fs_request *req = arg;
+    struct spdk_fs_cb_args *args = &req->args;
+
+    SPDK_DEBUGLOG(SPDK_LOG_BLOBFS, "file=%s\n", args->op.open.name);
+    blobfs2_open_async(args->fs, args->op.open.name, args->op.open.flags,
+                            __blobfs2_open_done, req);
+}
+
+int blobfs2_open(struct spdk_filesystem *fs, struct spdk_io_channel *_channel,
+                  const char *name, uint32_t flags, struct spdk_file **file)
+{
+    struct spdk_fs_channel *channel = spdk_io_channel_get_ctx(_channel);
+    struct spdk_fs_request *req;
+    struct spdk_fs_cb_args *args;
+    int rc;
+
+    SPDK_DEBUGLOG(SPDK_LOG_BLOBFS, "file=%s\n", name);
+
+    req = blobfs2_alloc_fs_request(channel, false);
+    if (req == NULL) {
+        return -ENOMEM;
+    }
+
+    args = &req->args;
+    args->fs = fs;
+    args->op.open.name = name;
+    args->op.open.flags = flags;
+    args->sem = &channel->sem;
+    fs->send_request(__blobfs2_open_cb, req);
+    sem_wait(&channel->sem);
+    rc = args->rc;
+    if (rc == 0) {
+        *file = args->file;
+    } else {
+        *file = NULL;
+    }
+    blobfs2_free_fs_request(req);
+
+    return rc;
+}
+
+static void blobfs2_blob_delete_cb(void *ctx, int bserrno)
+{
+	struct spdk_fs_request *req = ctx;
+	struct spdk_fs_cb_args *args = &req->args;
+
+	args->fn.file_op(args->arg, bserrno);
+	blobfs2_free_fs_request(req);
+}
+
+void blobfs2_delete_file_async(struct spdk_filesystem *fs, const char *name,
+						  spdk_file_op_complete cb_fn, void *cb_arg)
+{
+	struct spdk_file *f;
+	spdk_blob_id blobid;
+	struct spdk_fs_request *req;
+	struct spdk_fs_cb_args *args;
+
+	SPDK_DEBUGLOG(SPDK_LOG_BLOBFS, "file=%s\n", name);
+
+	if (strnlen(name, SPDK_FILE_NAME_MAX + 1) == SPDK_FILE_NAME_MAX + 1) {
+		cb_fn(cb_arg, -ENAMETOOLONG);
+		return;
+	}
+
+	f = fs_find_file(fs, name);
+	if (f == NULL) {
+		cb_fn(cb_arg, -ENOENT);
+		return;
+	}
+
+	req = blobfs2_alloc_fs_request(fs->md_target.md_fs_channel, false);
+	if (req == NULL) {
+		cb_fn(cb_arg, -ENOMEM);
+		return;
+	}
+
+	args = &req->args;
+	args->fn.file_op = cb_fn;
+	args->arg = cb_arg;
+
+	if (f->ref_count > 0) {
+		/* If the ref > 0, we mark the file as deleted and delete it when we close it. */
+		f->is_deleted = true;
+		spdk_blob_set_xattr(f->blob, "is_deleted", &f->is_deleted, sizeof(bool));
+		spdk_blob_sync_md(f->blob, blobfs2_blob_delete_cb, args);
+		return;
+	}
+
+	TAILQ_REMOVE(&fs->files, f, tailq);
+
+	cache_free_buffers(f);
+
+	blobid = f->blobid;
+
+	free(f->name);
+	free(f->tree);
+	free(f);
+
+	spdk_bs_delete_blob(fs->bs, blobid, blobfs2_blob_delete_cb, req);
+}
+
+/*
+ * Close routines
+ */
+
+static void __blobfs2_close_async_done(void *ctx, int bserrno)
+{
+	struct spdk_fs_request *req = ctx;
+	struct spdk_fs_cb_args *args = &req->args;
+	struct spdk_file *file = args->file;
+
+	if (file->is_deleted) {
+		blobfs2_delete_file_async(file->fs, file->name, blob_delete_cb, ctx);
+		return;
+	}
+
+	args->fn.file_op(args->arg, bserrno);
+	blobfs2_free_fs_request(req);
+}
+
+static void __blobfs2_close_async(struct spdk_file *file, struct spdk_fs_request *req)
+{
+	struct spdk_blob *blob;
+
+	pthread_spin_lock(&file->lock);
+	if (file->ref_count == 0) {
+		pthread_spin_unlock(&file->lock);
+		__file_close_async_done(req, -EBADF);
+		return;
+	}
+
+	file->ref_count--;
+	if (file->ref_count > 0) {
+		pthread_spin_unlock(&file->lock);
+		req->args.fn.file_op(req->args.arg, 0);
+		blobfs2_free_fs_request(req);
+		return;
+	}
+
+	pthread_spin_unlock(&file->lock);
+
+	blob = file->blob;
+	file->blob = NULL;
+	spdk_blob_close(blob, __blobfs2_close_async_done, req);
+}
+
+static void __blobfs2_close_cb(void *arg)
+{
+	struct spdk_fs_request *req = arg;
+	struct spdk_fs_cb_args *args = &req->args;
+	struct spdk_file *file = args->file;
+
+	__blobfs2_close_async(file, req);
+}
+
 int blobfs2_close(struct spdk_file * file, struct spdk_io_channel * _channel)
 {
 	struct spdk_fs_channel * channel = spdk_io_channel_get_ctx(_channel);
 	struct spdk_fs_request * req;
 	struct spdk_fs_cb_args * args;
 
-	req = alloc_fs_request(channel);
+	req = blobfs2_alloc_fs_request(channel);
 	if (req == NULL) {
 		return -ENOMEM;
 	}
@@ -3876,7 +4289,7 @@ int blobfs2_close(struct spdk_file * file, struct spdk_io_channel * _channel)
 	args->sem = &channel->sem;
 	args->fn.file_op = __wake_caller;
 	args->arg = req;
-	channel->send_request(__file_close, req);
+	channel->send_request(__blobfs2_close_cb, req);
 	sem_wait(&channel->sem);
 	//__file_close releases the req
 

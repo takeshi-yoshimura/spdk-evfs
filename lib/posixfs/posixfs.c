@@ -493,7 +493,7 @@ static int __hookfs_deletefile(const char * blobfspath) {
         goto free_duppath;
     }
 
-    rc = spdk_fs_open_file(g_fs, g_channel, parent, 0, &file);
+    rc = blobfs2_open(g_fs, g_channel, parent, 0, &file);
     if (rc) {
         errno = -rc;
         goto free_buf;
@@ -536,19 +536,19 @@ static int __hookfs_deletefile(const char * blobfspath) {
         goto free_buf;
     }
 
-    rc = spdk_fs_create_file(g_fs, g_channel, parent);
+    rc = blobfs2_create_file(g_fs, g_channel, parent);
     if (rc) {
         errno = -rc;
         goto free_buf;
     }
 
-/*    rc = spdk_fs_open_file(g_fs, g_channel, parent, 0, &file);
+/*    rc = blobfs2_open(g_fs, g_channel, parent, 0, &file);
     if (rc) {
         errno = -rc;
         goto free_buf;
     }
 
-    rc = spdk_file_truncate(file, g_channel, 0);
+    rc = blobfs2_truncate(file, g_channel, 0);
     if (rc) {
         errno = -rc;
         goto close_file;
@@ -556,7 +556,7 @@ static int __hookfs_deletefile(const char * blobfspath) {
 
     blobfs2_close(file, g_channel);*/
 
-    rc = spdk_fs_open_file(g_fs, g_channel, parent, 0, &file);
+    rc = blobfs2_open(g_fs, g_channel, parent, 0, &file);
     if (rc) {
         errno = -rc;
         goto free_buf;
@@ -630,7 +630,7 @@ static int __hookfs_isemptydir(const char * blobfspath) {
         return -1;
     }
 
-    rc = spdk_fs_open_file(g_fs, g_channel, blobfspath, 0, &file);
+    rc = blobfs2_open(g_fs, g_channel, blobfspath, 0, &file);
     if (rc) {
         errno = -rc;
         goto free_buf;
@@ -686,7 +686,7 @@ static int __hookfs_addfile(const char * blobfspath, const char *filename, unsig
 
     rc = blobfs2_stat(g_fs, g_channel, blobfspath, &stat);
     if (rc == -ENOENT) {
-        rc = spdk_fs_create_file(g_fs, g_channel, blobfspath);
+        rc = blobfs2_create_file(g_fs, g_channel, blobfspath);
         if (rc != 0) {
             SPDK_ERRLOG("failed to create file: %s, %d\n", blobfspath, rc);
             return -1;
@@ -694,7 +694,7 @@ static int __hookfs_addfile(const char * blobfspath, const char *filename, unsig
         stat.size = 0;
     }
 
-    rc = spdk_fs_open_file(g_fs, g_channel, blobfspath, SPDK_BLOBFS_OPEN_CREATE, &file);
+    rc = blobfs2_open(g_fs, g_channel, blobfspath, SPDK_BLOBFS_OPEN_CREATE, &file);
     if (rc != 0) {
         return -rc;
     }
@@ -738,7 +738,7 @@ static int __hookfs_open(const char * blobfspath, int oflag, int mflag)
     if (oflag & O_CREAT) {
 // TODO: remove this workaround for racy file creation
         pthread_mutex_lock(&mutex);
-        rc = spdk_fs_create_file(g_fs, g_channel, blobfspath);
+        rc = blobfs2_create_file(g_fs, g_channel, blobfspath);
         if ((oflag & O_EXCL) && rc == -EEXIST) {
             SPDK_ERRLOG("failed to create file: %s, %d\n", blobfspath, rc);
             goto realfs_close;
@@ -760,7 +760,7 @@ static int __hookfs_open(const char * blobfspath, int oflag, int mflag)
         pthread_mutex_unlock(&mutex);
     }
 
-    rc = spdk_fs_open_file(g_fs, g_channel, blobfspath, oflag, &file);
+    rc = blobfs2_open(g_fs, g_channel, blobfspath, oflag, &file);
 //    SPDK_ERRLOG("open: %s, %d, fd = %d, file = %p\n", blobfspath, rc, fd, file);
     if (rc != 0) {
         SPDK_ERRLOG("failed to open %s, %d\n", blobfspath, rc);
@@ -1715,7 +1715,7 @@ int closedir(DIR * _dirp) {
 static int hookfs_truncate(const char * abspath, off_t length) {
     const char * blobfspath = (*(abspath + g_mountpoint_strlen) == 0) ? "/": abspath + g_mountpoint_strlen;
     struct spdk_file * file;
-    int rc = spdk_fs_open_file(g_fs, g_channel, blobfspath, 0, &file);
+    int rc = blobfs2_open(g_fs, g_channel, blobfspath, 0, &file);
     if (rc != 0) {
         errno = -rc;
         return -1;
