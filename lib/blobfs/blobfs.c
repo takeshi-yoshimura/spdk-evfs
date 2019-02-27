@@ -4076,11 +4076,6 @@ static void blobfs2_open_async(struct spdk_filesystem *fs, const char *name, uin
         return;
     }
 
-    if (f != NULL && f->is_deleted == false && (flags & (O_CREAT | O_EXCL))) {
-        cb_fn(cb_arg, NULL, -EEXIST);
-        return;
-    }
-
     req = blobfs2_alloc_fs_request(fs->md_target.md_fs_channel, false);
     if (req == NULL) {
         cb_fn(cb_arg, NULL, -ENOMEM);
