@@ -202,7 +202,7 @@ struct spdk_fs_cb_args {
 			const char	*name;
 		} stat;
 		struct {
-            void * user_buf;
+            struct channel_heap * user_buf;
             void * pin_buf;
             uint64_t offset;
             uint64_t length;
@@ -277,9 +277,16 @@ struct spdk_fs_request {
 	struct spdk_fs_channel		*channel;
 };
 
+struct channel_heap {
+    uint8_t page[65536];  /* must be the beginning of this struct */
+    TAILQ_ENTRY(channel_heap) link;
+};
+
 struct spdk_fs_channel {
 	struct spdk_fs_request		*req_mem;
 	TAILQ_HEAD(, spdk_fs_request)	reqs;
+	struct channel_heap * heap_head;
+	TAILQ_HEAD(, channel_heap) heaps;
 	sem_t				sem;
 	struct spdk_filesystem		*fs;
 	struct spdk_io_channel		*bs_channel;
@@ -339,15 +346,20 @@ _spdk_fs_channel_create(struct spdk_filesystem *fs, struct spdk_fs_channel *chan
 	uint32_t i;
 
 	channel->req_mem = calloc(max_ops, sizeof(struct spdk_fs_request));
-	if (!channel->req_mem) {
+	channel->heap_head = calloc(max_ops, sizeof(struct channel_heap));
+	if (!channel->req_mem || !channel->heap_head) {
+	    free(channel->req_mem);
+	    free(channel->heap_head);
 		return -1;
 	}
 
 	TAILQ_INIT(&channel->reqs);
+	TAILQ_INIT(&channel->heaps);
 	sem_init(&channel->sem, 0, 0);
 
 	for (i = 0; i < max_ops; i++) {
 		TAILQ_INSERT_TAIL(&channel->reqs, &channel->req_mem[i], link);
+		TAILQ_INSERT_TAIL(&channel->heaps, &channel->heap_head[i], link);
 	}
 
 	channel->fs = fs;
@@ -2707,40 +2719,13 @@ cache_free_buffers(struct spdk_file *file)
 #define O_DIRECT 1
 #endif
 
-struct thread_mem {
-	void * page;
-	TAILQ_ENTRY(thread_mem) link;
-};
-
 static uint64_t g_page_size;
 static int64_t g_nr_buffers;
 static int64_t g_nr_dirties;
 static TAILQ_HEAD(, cache_buffer) g_zeroref_caches;
 static TAILQ_HEAD(, spdk_fs_request) g_evict_waiter;
 static TAILQ_HEAD(, cache_buffer) g_blank_buffer;
-static TAILQ_HEAD(, thread_mem) g_thread_memory;
 static void ** dma_head;
-// TODO
-int blobfs2_thread_init(void)
-{
-	size_t i;
-	struct thread_mem * mem = malloc(sizeof(struct thread_mem) * g_thread_cache_size / CACHE_BUFFER_SIZE);
-	TAILQ_INIT(&g_thread_memory);
-	if (!mem) {
-		return -ENOMEM;
-	}
-	for (i = 0; i < g_thread_cache_size / 1024 / 1024 / 1024; i++) {
-		uint64_t offset;
-		void * m = malloc(1024 * 1024 * 1024);
-		if (!m) {
-			return -ENOMEM;
-		}
-		for (offset = 0; offset < 1024 * 1024 * 1024; offset += CACHE_BUFFER_SIZE) {
-			struct thread_mem * next = m + offset;
-			TAILQ_INSERT_TAIL(&g_thread_memory, next, link);
-		}
-	}
-}
 
 int blobfs2_init(void)
 {
@@ -2756,7 +2741,7 @@ int blobfs2_init(void)
 		SPDK_WARNLOG("CacheBufferShift should be larger than page shift for this platform. This hurts Blobfs2 performance\n");
 	}
 
-	dma_head = calloc(1, sizeof(void *) * g_fs_cache_size / 1024 / 1024 / 1024);
+	dma_head = calloc(g_fs_cache_size / 1024 / 1024 / 1024, sizeof(void *));
 	if (!dma_head) {
 		return -ENOMEM;
 	}
@@ -2859,17 +2844,62 @@ static void blobfs2_put_buffer(struct spdk_file * file, struct cache_buffer * bu
     }
 }
 
-static struct spdk_fs_request * blobfs2_alloc_fs_request(struct spdk_fs_channel * channel)
+static struct spdk_fs_request * blobfs2_alloc_fs_request(struct spdk_fs_channel * channel, bool need_ubuf)
 {
-	struct spdk_fs_request * req = alloc_fs_request(channel);
-	if (req) {
-		req->args.from_request = true;
-		return req;
-	}
+    struct spdk_fs_request * req;
+    struct channel_heap * h = NULL;
+
+    if (channel->sync) {
+        pthread_spin_lock(&channel->lock);
+    }
+
+    req = TAILQ_FIRST(&channel->reqs);
+    if (req) {
+        TAILQ_REMOVE(&channel->reqs, req, link);
+    }
+
+    if (need_ubuf) {
+        h = TAILQ_FIRST(&channel->heaps);
+        if (h) {
+            TAILQ_REMOVE(&channel->heaps, h, link);
+        }
+    }
+
+    if (channel->sync) {
+        pthread_spin_unlock(&channel->lock);
+    }
+
+    if (need_ubuf && !h) {
+        h = calloc(1, sizeof(struct channel_heap));
+        if (!h && req) {
+            if (channel->sync) {
+                pthread_spin_lock(&channel->lock);
+            }
+            TAILQ_INSERT_TAIL(&channel->reqs, req, link);
+            if (channel->sync) {
+                pthread_spin_unlock(&channel->lock);
+            }
+            return NULL;
+        }
+    }
+
+    if (req) {
+        memset(req, 0, sizeof(*req));
+        req->channel = channel;
+        req->args.from_request = true;
+        if (need_ubuf) {
+            req->args.op.blobfs2_rw.user_buf = h;
+        }
+        return req;
+    }
+
 	req = calloc(1, sizeof(*req));
 	if (req) {
 		memset(req, 0, sizeof(*req));
 		req->channel = channel;
+        if (need_ubuf) {
+            req->args.op.blobfs2_rw.user_buf = h;
+        }
 		return req;
 	}
 	return NULL;
@@ -2877,14 +2907,24 @@ static struct spdk_fs_request * blobfs2_alloc_fs_request(struct spdk_fs_channel 
 
 static void blobfs2_free_fs_request(struct spdk_fs_request * req)
 {
-	if (!req) {
-		return;
-	}
-	if (req->args.from_request) {
-		free_fs_request(req);
-	} else {
-		free(req);
-	}
+    struct spdk_fs_channel *channel = req->channel;
+    bool from_req = req->args.from_request;
+    bool free_heap = req->args.op.blobfs2_rw.need_free_ubuf;
+
+    if (channel->sync) {
+        pthread_spin_lock(&channel->lock);
+    }
+    // TODO: currently, we pool all the allocated reqs/heaps. this might become memory pressure
+    if (from_req) {
+        TAILQ_INSERT_HEAD(&req->channel->reqs, req, link);
+    }
+    if (free_heap) {
+        TAILQ_INSERT_TAIL(&channel->heaps, req->args.op.blobfs2_rw.user_buf, link);
+        req->args.op.blobfs2_rw.user_buf = NULL;
+    }
+    if (channel->sync) {
+        pthread_spin_unlock(&channel->lock);
+    }
 }
 
 static void __blobfs2_copy_stat(void *arg, struct spdk_file_stat *stat, int fserrno)
@@ -2928,7 +2968,7 @@ int blobfs2_stat(struct spdk_filesystem *fs, struct spdk_io_channel *_channel,
 	struct spdk_fs_request *req;
 	int rc;
 
-	req = blobfs2_alloc_fs_request(channel);
+	req = blobfs2_alloc_fs_request(channel, false);
 	if (req == NULL) {
 		return -ENOMEM;
 	}
@@ -3019,7 +3059,7 @@ int blobfs2_truncate(struct spdk_file * file, struct spdk_io_channel * _channel,
 	struct spdk_fs_request * req;
 	int rc;
 
-	req = blobfs2_alloc_fs_request(channel);
+	req = blobfs2_alloc_fs_request(channel, false);
 	if (!req) {
 		return -ENOMEM;
 	}
@@ -3045,11 +3085,6 @@ static void __blobfs2_rw_last(struct cache_buffer *buffer, struct spdk_fs_reques
     if (buffer) {
     	buffer->in_progress = false;
         blobfs2_put_buffer(file, buffer);
-    }
-
-    if (!args->op.blobfs2_rw.need_free_ubuf) {
-		free(args->op.blobfs2_rw.user_buf);
-		args->op.blobfs2_rw.user_buf = NULL;
     }
 
 	// for write barrier/sync
@@ -3160,7 +3195,7 @@ static void __blobfs2_flush_buffer_blob_evict_cache(void * _args, int bserrno)
             continue;
         }
 
-        subreq = blobfs2_alloc_fs_request(req->channel);
+        subreq = blobfs2_alloc_fs_request(req->channel, false);
 
         if (!subreq) {
             rc = -ENOMEM;
@@ -3202,7 +3237,7 @@ static void __blobfs2_buffered_blob_resize_done(void * _args, int bserrno)
     if (!TAILQ_EMPTY(&req->args.file->resize_waiter)) {
         struct spdk_fs_request * dreq = TAILQ_FIRST(&req->args.file->resize_waiter);
         TAILQ_REMOVE(&req->args.file->resize_waiter, dreq, args.op.blobfs2_rw.resize_tailq);
-		req->channel->send_request(__blobfs2_flush_buffer_check_resize, dreq);
+        args->file->fs->md_target.md_fs_channel->send_request(__blobfs2_flush_buffer_check_resize, dreq);
 //		__blobfs2_flush_buffer_check_resize(dreq);
     }
 }
@@ -3239,7 +3274,7 @@ static void __blobfs2_rw_copy_buffer(void * _args, int bserrno)
     struct spdk_fs_cb_args * args = &req->args;
     struct spdk_file * file = args->file;
     struct cache_buffer * buffer = args->op.blobfs2_rw.buffer;
-    void * payload = args->op.blobfs2_rw.user_buf;
+    void * payload = args->op.blobfs2_rw.user_buf->page;
     uint64_t offset = args->op.blobfs2_rw.offset;
     uint64_t length = args->op.blobfs2_rw.length;
     uint64_t buffer_offset = offset - offset % CACHE_BUFFER_SIZE;
@@ -3304,7 +3339,7 @@ static int blobfs2_evict_cache(void * _args)
 		return 0;
 	}
 
-	subreq = blobfs2_alloc_fs_request(req->channel);
+	subreq = blobfs2_alloc_fs_request(req->channel, false);
 	if (!subreq) {
 	    return -ENOMEM;
 	}
@@ -3318,7 +3353,7 @@ static int blobfs2_evict_cache(void * _args)
 	subreq->args.op.blobfs2_rw.sync_op = __blobfs2_flush_buffer_blob_evict_cache;
 	subreq->args.op.blobfs2_rw.nr_evict = nr_evict;
     TAILQ_INSERT_TAIL(&file->sync_requests, subreq, args.op.blobfs2_rw.sync_tailq);
-    req->channel->send_request(__blobfs2_flush_buffer_check_resize, subreq);
+    file->fs->md_target.md_fs_channel->send_request(__blobfs2_flush_buffer_check_resize, subreq);
 //    __blobfs2_flush_buffer_check_resize(subreq);
 
 	clock_gettime(CLOCK_MONOTONIC, &t2);
@@ -3437,7 +3472,7 @@ static void __blobfs2_rw_direct_done(void * _args, int bserrno)
 	    SPDK_ERRLOG("failed to write: offset=%lu, length=%lu, bserrno=%d\n", args->op.blobfs2_rw.offset, length, bserrno);
 	}
     if (args->op.blobfs2_rw.is_read) {
-		memcpy(args->op.blobfs2_rw.user_buf, args->op.blobfs2_rw.buffer->buf, length);
+		memcpy(args->op.blobfs2_rw.user_buf->page, args->op.blobfs2_rw.buffer->buf, length);
     }
 
     TAILQ_INSERT_TAIL(&g_blank_buffer, args->op.blobfs2_rw.buffer, zeroref_tailq);
@@ -3466,7 +3501,7 @@ static void __blobfs2_write_direct_blob(void * _args)
 	args->op.blobfs2_rw.buffer = buffer;
 
 	__get_page_parameters(file, offset, length, &start_lba, &lba_size, &num_lba);
-	memcpy(buffer->buf, args->op.blobfs2_rw.user_buf, length);
+	memcpy(buffer->buf, args->op.blobfs2_rw.user_buf->page, length);
 	spdk_blob_io_write(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
 	        buffer->buf + (start_lba * lba_size) - offset, start_lba, num_lba, __blobfs2_rw_direct_done, req);
 }
@@ -3585,7 +3620,7 @@ static int64_t blobfs2_rw(struct spdk_file *file, struct spdk_io_channel * _chan
 	struct spdk_fs_channel * channel;
 	struct spdk_fs_request * req;
 	uint64_t align = spdk_bs_get_io_unit_size(file->fs->bs);
-	void * user_buf = NULL;
+	struct channel_heap * user_buf = NULL;
 	bool waitrc = (is_read || (oflag & (O_SYNC | O_DSYNC | O_DIRECT)));
 	int64_t rc;
 
@@ -3602,19 +3637,17 @@ static int64_t blobfs2_rw(struct spdk_file *file, struct spdk_io_channel * _chan
 		return -EINVAL;
 	}
 
-	if (!waitrc) {
-		// TODO: use copy-on-write for large length
-		user_buf = malloc(length);
-		if (!user_buf) {
-			return -ENOMEM;
-		}
-		memcpy(user_buf, payload, length);
-	}
-
-	req = blobfs2_alloc_fs_request(channel);
+	req = blobfs2_alloc_fs_request(channel, !waitrc);
 	if (!req) {
 		return -ENOMEM;
 	}
+
+    if (!waitrc) {
+        user_buf = req->args.op.blobfs2_rw.user_buf;
+        memcpy(user_buf->page, payload, length);
+    } else {
+        req->args.op.blobfs2_rw.user_buf = payload;
+    }
 
 	// setup a non-blocking call to avoid blocking at racy buffer cache update
 	req->args.file = file;
@@ -3624,7 +3657,6 @@ static int64_t blobfs2_rw(struct spdk_file *file, struct spdk_io_channel * _chan
 	req->args.op.blobfs2_rw.is_read = is_read;
 	req->args.op.blobfs2_rw.delayed = false;
 	req->args.fn.file_op = NULL;
-	req->args.op.blobfs2_rw.user_buf = waitrc ? payload: user_buf;
 	req->args.op.blobfs2_rw.need_free_ubuf = waitrc;
 	req->args.sem = waitrc ? &channel->sem: NULL;
 
@@ -3699,7 +3731,7 @@ static void __blobfs2_sync_cb(void * _args, int bserrno)
     TAILQ_SWAP(&file->dirty_buffers, &dirty_buffers, cache_buffer, dirty_tailq);
     while (!TAILQ_EMPTY(&dirty_buffers)) {
         struct cache_buffer * buffer = TAILQ_FIRST(&dirty_buffers);
-		struct spdk_fs_request * subreq = blobfs2_alloc_fs_request(req->channel);
+		struct spdk_fs_request * subreq = blobfs2_alloc_fs_request(req->channel, false);
 
 		if (!subreq) {
 			args->rc = -ENOMEM;
@@ -3776,7 +3808,7 @@ int blobfs2_sync(struct spdk_file * file, struct spdk_io_channel * _channel)
     struct spdk_fs_request * req;
     int rc;
 
-    req = blobfs2_alloc_fs_request(channel);
+    req = blobfs2_alloc_fs_request(channel, false);
     if (!req) {
     	return -ENOMEM;
     }
@@ -3797,7 +3829,7 @@ int blobfs2_barrier(struct spdk_file * file, struct spdk_io_channel * _channel) 
 	struct spdk_fs_request * req;
 	int rc;
 
-	req = blobfs2_alloc_fs_request(channel);
+	req = blobfs2_alloc_fs_request(channel, false);
 	if (!req) {
 		return -ENOMEM;
 	}
@@ -3923,7 +3955,7 @@ int blobfs2_delete_file(struct spdk_filesystem *fs, struct spdk_io_channel *_cha
 	struct spdk_fs_cb_args *args;
 	int rc;
 
-	req = blobfs2_alloc_fs_request(channel);
+	req = blobfs2_alloc_fs_request(channel, false);
 	if (req == NULL) {
 		return -ENOMEM;
 	}
@@ -3969,7 +4001,7 @@ int blobfs2_access(struct spdk_filesystem * fs, struct spdk_io_channel * _channe
 	struct spdk_fs_cb_args *args;
 	int rc;
 
-	req = blobfs2_alloc_fs_request(channel);
+	req = blobfs2_alloc_fs_request(channel, false);
 	if (req == NULL) {
 		return -ENOMEM;
 	}
