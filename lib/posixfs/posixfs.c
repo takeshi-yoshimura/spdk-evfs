@@ -714,9 +714,6 @@ static int __hookfs_addfile(const char * blobfspath, const char *filename, unsig
     return 0;
 }
 
-// TODO: remove this workaround for racy file creation
-pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
-
 static int __hookfs_open(const char * blobfspath, int oflag, int mflag)
 {
     struct spdk_file * file;
@@ -736,8 +733,6 @@ static int __hookfs_open(const char * blobfspath, int oflag, int mflag)
     }
 
     if (oflag & O_CREAT) {
-// TODO: remove this workaround for racy file creation
-        pthread_mutex_lock(&mutex);
         rc = blobfs2_create_file(g_fs, g_channel, blobfspath);
         if ((oflag & O_EXCL) && rc == -EEXIST) {
             SPDK_ERRLOG("failed to create file: %s, %d\n", blobfspath, rc);
@@ -757,7 +752,6 @@ static int __hookfs_open(const char * blobfspath, int oflag, int mflag)
                 goto realfs_close;
             }
         }
-        pthread_mutex_unlock(&mutex);
     }
 
     rc = blobfs2_open(g_fs, g_channel, blobfspath, oflag, &file);
