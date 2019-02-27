@@ -348,9 +348,9 @@ _spdk_fs_channel_create(struct spdk_filesystem *fs, struct spdk_fs_channel *chan
 	sem_init(&channel->sem, 0, 0);
 
 	for (i = 0; i < max_ops; i++) {
-	    struct spdk_fs_request * req = calloc(1, sizeof(struct spdk_fs_request));
-	    struct channel_heap * heap = calloc(1, sizeof(struct channel_heap));
-	    void * page = calloc(1, CACHE_BUFFER_SIZE);
+	    struct spdk_fs_request * req = malloc(sizeof(struct spdk_fs_request));
+	    struct channel_heap * heap = malloc(sizeof(struct channel_heap));
+	    void * page = malloc(CACHE_BUFFER_SIZE);
 	    if (req && heap && page) {
 	        heap->page = page;
             TAILQ_INSERT_TAIL(&channel->reqs, req, link);
@@ -2745,7 +2745,7 @@ int blobfs2_init(void)
 		SPDK_WARNLOG("CacheBufferShift should be larger than page shift for this platform. This hurts Blobfs2 performance\n");
 	}
 
-	dma_head = calloc(g_fs_cache_size_in_gb, sizeof(void *));
+	dma_head = malloc(g_fs_cache_size_in_gb * sizeof(void *));
 	if (!dma_head) {
 		return -ENOMEM;
 	}
@@ -2759,9 +2759,9 @@ int blobfs2_init(void)
 			return -ENOMEM;
 		}
 		for (dmasize = 0; dmasize < 1024 * 1024 * 1024; dmasize += CACHE_BUFFER_SIZE) {
-			struct cache_buffer * buf = calloc(1, sizeof(struct cache_buffer));
+			struct cache_buffer * buf = malloc(sizeof(struct cache_buffer));
 			if (!buf) {
-				SPDK_WARNLOG("calloc failed during Blobfs initialization\n");
+				SPDK_WARNLOG("malloc failed during Blobfs initialization\n");
 				break;
 			}
 			buf->buf = dma + dmasize;
@@ -2874,8 +2874,8 @@ static struct spdk_fs_request * blobfs2_alloc_fs_request(struct spdk_fs_channel 
     }
 
     if (need_ubuf && !h) {
-        void * page = calloc(1, CACHE_BUFFER_SIZE);
-        h = calloc(1, sizeof(struct channel_heap));
+        void * page = malloc(CACHE_BUFFER_SIZE);
+        h = malloc(sizeof(struct channel_heap));
         if (!h || !page) {
             free(h);
             free(page);
@@ -2902,7 +2902,7 @@ static struct spdk_fs_request * blobfs2_alloc_fs_request(struct spdk_fs_channel 
         return req;
     }
 
-	req = calloc(1, sizeof(*req));
+	req = malloc(sizeof(*req));
 	if (req) {
 		memset(req, 0, sizeof(*req));
 		req->channel = channel;
@@ -3350,7 +3350,11 @@ static int blobfs2_evict_cache(void * _args)
 	    return -ENOMEM;
 	}
 
-	g_nr_dirties -= nr_evict;
+    if (nr_evict > g_nr_dirties) {
+        g_nr_dirties = 0;
+    } else {
+        g_nr_dirties -= nr_evict;
+    }
 
 	subreq->args.file = file;
     subreq->args.sem = NULL;
@@ -4441,7 +4445,7 @@ int blobfs2_access(struct spdk_filesystem * fs, struct spdk_io_channel * _channe
 
 void blobfs2_dump_request(void)
 {
-	SPDK_ERRLOG("evict = %ld, alloc = %ld, memcpy = %ld\n", t_evict_cache, t_alloc_buffer, t_memcpy);
+//	SPDK_ERRLOG("evict = %ld, alloc = %ld, memcpy = %ld\n", t_evict_cache, t_alloc_buffer, t_memcpy);
 }
 
 SPDK_LOG_REGISTER_COMPONENT("blobfs", SPDK_LOG_BLOBFS)
