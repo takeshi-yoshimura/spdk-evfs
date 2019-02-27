@@ -2861,7 +2861,7 @@ static struct spdk_fs_request * blobfs2_alloc_fs_request_nonblock(struct spdk_fs
 {
 	struct spdk_fs_request * req = calloc(1, sizeof(struct spdk_fs_request));
 	if (!req) {
-		return -ENOMEM;
+		return NULL;
 	}
 	req->channel = channel;
 	req->args.from_request = false;
@@ -4124,7 +4124,7 @@ static void blobfs2_open_async(struct spdk_fs_channel * channel, struct spdk_fil
     args->op.open.name = name;
 
     if (f == NULL && (flags & O_CREAT)) {
-        blobfs2_create_file_async(fs, name, blobfs2_open_blob_create_cb, req);
+        blobfs2_create_file_async(channel, fs, name, blobfs2_open_blob_create_cb, req);
     } else {
         blobfs2_open_blob_create_cb(req, 0);
     }
