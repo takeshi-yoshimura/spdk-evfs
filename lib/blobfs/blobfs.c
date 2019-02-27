@@ -2906,11 +2906,12 @@ static struct spdk_fs_request * blobfs2_alloc_fs_request(struct spdk_fs_channel 
     }
 
     if (!req) {
-		req = calloc(1, sizeof(*req));
+		req = malloc(sizeof(*req));
 		if (!req) {
 			return NULL;
 		}
     }
+    memset(req, 0, sizeof(*req));
 	req->channel = channel;
 	req->args.from_request = true;
 
@@ -3703,14 +3704,14 @@ static int64_t blobfs2_rw(struct spdk_file *file, struct spdk_io_channel * _chan
 
 	channel->send_request(__blobfs2_rw_cb, req);
 	if (waitrc) {
-		while (req->args.cond > 0) {
+		/*while (req->args.cond > 0) {
 			usleep(1);
-		}
-		//sem_wait(&channel->sem);
+		}*/
+		sem_wait(&channel->sem);
 		rc = req->args.op.blobfs2_rw.length;
 		blobfs2_free_fs_request(req);
 	} else {
-		rc = req->args.op.blobfs2_rw.length;
+		rc = length;
 	}
 
 	return rc;
@@ -4110,7 +4111,7 @@ static void blobfs2_open_async(struct spdk_fs_channel * channel, struct spdk_fil
         return;
     }
 
-    req = blobfs2_alloc_fs_request(channel, false);
+    req = blobfs2_alloc_fs_request_nonblock(channel);
     if (req == NULL) {
         cb_fn(cb_arg, NULL, -ENOMEM);
         return;
