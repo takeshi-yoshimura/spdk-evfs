@@ -2773,7 +2773,7 @@ static void blobfs2_expand_reqs(struct spdk_fs_channel * channel)
     ++channel->nr_allocated_pages;
     TAILQ_INSERT_TAIL(&channel->mmap_pages, a, link);
 
-    for (off = sizeof(*a); off < g_page_size; off += sizeof(*req)) {
+    for (off = sizeof(*a); off + sizeof(*req) < g_page_size; off += sizeof(*req)) {
         req = (struct spdk_fs_request *)(page + off);
         TAILQ_INSERT_TAIL(&channel->reqs, req, link);
     }
@@ -2824,7 +2824,7 @@ static void blobfs2_expand_heap(struct spdk_fs_channel * channel, int objsize)
     channel->nr_allocated_pages += nr_pages;
     TAILQ_INSERT_TAIL(&channel->mmap_pages, a, link);
 
-    for (off = sizeof(*a); off < g_page_size; off += sizeof(*h)) {
+    for (off = sizeof(*a); off + sizeof(*h) < g_page_size; off += sizeof(*h)) {
         h = (struct channel_heap *)pages + off;
         h->page = pages + g_page_size + off * objsize;
         TAILQ_INSERT_TAIL(&channel->heaps[heap_index], h, link);
