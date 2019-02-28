@@ -2786,12 +2786,11 @@ static void blobfs2_expand_heap(struct spdk_fs_channel * channel, int objsize)
 {
     uint8_t * pages;
     uint64_t nr_pages;
-    uint64_t off;
     struct channel_heap * h;
     struct blobfs2_mmap_area * a;
-    int heap_index;
+    int heap_index, i;
 
-    nr_pages = 1 + ((g_page_size - sizeof(struct blobfs2_mmap_area)) / sizeof(struct channel_heap)) * objsize / g_page_size;
+    nr_pages = 1 + (((g_page_size - sizeof(struct blobfs2_mmap_area)) / sizeof(struct channel_heap)) * objsize + g_page_size - 1) / g_page_size;
 
     // should we strictly check allocated pages with locking?
     if ((int)((channel->nr_allocated_pages + nr_pages) * g_page_size / 1024 / 1024 / 1024) >= g_channel_heap_in_gb) {
@@ -2824,9 +2823,9 @@ static void blobfs2_expand_heap(struct spdk_fs_channel * channel, int objsize)
     channel->nr_allocated_pages += nr_pages;
     TAILQ_INSERT_TAIL(&channel->mmap_pages, a, link);
 
-    for (off = sizeof(*a); off + sizeof(*h) < g_page_size; off += sizeof(*h)) {
-        h = (struct channel_heap *)pages + off;
-        h->page = pages + g_page_size + off * objsize;
+    for (i = 0; sizeof(*a) + (i + 1) * sizeof(*h) < g_page_size; i++) {
+        h = (struct channel_heap *)(pages + sizeof(*a) + i * sizeof(*h));
+        h->page = pages + g_page_size + i * objsize;
         TAILQ_INSERT_TAIL(&channel->heaps[heap_index - 1], h, link);
     }
     if (channel->sync) {
