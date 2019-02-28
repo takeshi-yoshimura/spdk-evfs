@@ -59,7 +59,7 @@ struct cache_buffer {
 
 extern uint32_t g_fs_cache_buffer_shift;
 
-#define CACHE_BUFFER_SHIFT_DEFAULT 18
+#define CACHE_BUFFER_SHIFT_DEFAULT 12
 #define CACHE_BUFFER_SIZE (1U << g_fs_cache_buffer_shift)
 #define NEXT_CACHE_BUFFER_OFFSET(offset)	\
 	(((offset + CACHE_BUFFER_SIZE) >> g_fs_cache_buffer_shift) << g_fs_cache_buffer_shift)

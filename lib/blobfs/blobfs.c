@@ -50,11 +50,12 @@
 #define BLOBFS_TRACE_RW(file, str, args...) \
 	SPDK_DEBUGLOG(SPDK_LOG_BLOBFS_RW, "file=%s " str, file->name, ##args)
 
-#define BLOBFS_DEFAULT_CACHE_SIZE_IN_GB (4)
+#define BLOBFS_DEFAULT_CACHE_SIZE_IN_GB (40)
 #define SPDK_BLOBFS_DEFAULT_OPTS_CLUSTER_SZ (1024 * 1024)
 
 static int g_fs_cache_size_in_gb = BLOBFS_DEFAULT_CACHE_SIZE_IN_GB;
-static int g_queue_depth = 128;
+static int g_channel_heap_in_gb = BLOBFS_DEFAULT_CACHE_SIZE_IN_GB;
+//static int g_queue_depth = 128;
 static struct spdk_mempool *g_cache_pool;
 static TAILQ_HEAD(, spdk_file) g_caches;
 static int g_fs_count = 0;
@@ -210,7 +211,7 @@ struct spdk_fs_cb_args {
 			int oflag;
             bool is_read;
             bool delayed;
-            bool need_free_ubuf;
+            int ubuf_heap_index;
             struct cache_buffer * buffer;
             TAILQ_ENTRY(spdk_fs_request) sync_tailq;
             TAILQ_ENTRY(spdk_fs_request) resize_tailq;
@@ -284,11 +285,19 @@ struct channel_heap {
     TAILQ_ENTRY(channel_heap) link;
 };
 
+struct blobfs2_mmap_area {
+    void * page;
+    uint64_t nr_pages;
+    TAILQ_ENTRY(blobfs2_mmap_area) link;
+};
+
 struct spdk_fs_channel {
 	struct spdk_fs_request		*req_mem;
-	int cur_queue_depth;
+    TAILQ_HEAD(, blobfs2_mmap_area) mmap_pages;
+    uint64_t nr_allocated_pages;
+//	int cur_queue_depth;
 	TAILQ_HEAD(, spdk_fs_request)	reqs;
-	TAILQ_HEAD(, channel_heap) heaps;
+    TAILQ_HEAD(, channel_heap) heaps[4]; // 16B, 256B, 4KB, 64KB
 	sem_t				sem;
 	struct spdk_filesystem		*fs;
 	struct spdk_io_channel		*bs_channel;
@@ -341,31 +350,18 @@ free_fs_request(struct spdk_fs_request *req)
 	}
 }
 
+static void blobfs2_release_heap(struct spdk_fs_channel * channel);
+
 static int
 _spdk_fs_channel_create(struct spdk_filesystem *fs, struct spdk_fs_channel *channel,
 			uint32_t max_ops)
 {
-	uint32_t i;
-
 	TAILQ_INIT(&channel->reqs);
-	TAILQ_INIT(&channel->heaps);
+    TAILQ_INIT(&channel->heaps[0]);
+    TAILQ_INIT(&channel->heaps[1]);
+    TAILQ_INIT(&channel->heaps[2]);
+    TAILQ_INIT(&channel->heaps[3]);
 	sem_init(&channel->sem, 0, 0);
-
-	for (i = 0; i < max_ops; i++) {
-	    struct spdk_fs_request * req = malloc(sizeof(struct spdk_fs_request));
-	    struct channel_heap * heap = malloc(sizeof(struct channel_heap));
-	    void * page = malloc(CACHE_BUFFER_SIZE);
-	    if (req && heap && page) {
-	        heap->page = page;
-            TAILQ_INSERT_TAIL(&channel->reqs, req, link);
-            TAILQ_INSERT_TAIL(&channel->heaps, heap, link);
-        } else {
-	        free(req);
-	        free(heap);
-	        free(page);
-	        return -1;
-	    }
-	}
 
 	channel->fs = fs;
 
@@ -415,13 +411,7 @@ _spdk_fs_channel_destroy(void *io_device, void *ctx_buf)
         TAILQ_REMOVE(&channel->reqs, req, link);
         free(req);
     }
-    while (!TAILQ_EMPTY(&channel->heaps)) {
-        struct channel_heap * heap = TAILQ_FIRST(&channel->heaps);
-        void * page = heap->page;
-        TAILQ_REMOVE(&channel->heaps, heap, link);
-        free(page);
-        free(heap);
-    }
+    blobfs2_release_heap(channel);
 	if (channel->bs_channel != NULL) {
 		spdk_bs_free_io_channel(channel->bs_channel);
 	}
@@ -473,6 +463,7 @@ static void
 fs_conf_parse(void)
 {
 	struct spdk_conf_section *sp;
+	int fs_cache_buffer_shift; // we use local variable in case of parse errors
 
 	sp = spdk_conf_find_section(NULL, "Blobfs");
 	if (sp == NULL) {
@@ -480,10 +471,12 @@ fs_conf_parse(void)
 		return;
 	}
 
-	g_fs_cache_buffer_shift = spdk_conf_section_get_intval(sp, "CacheBufferShift");
-	if (g_fs_cache_buffer_shift <= 0) {
-		g_fs_cache_buffer_shift = CACHE_BUFFER_SHIFT_DEFAULT;
+    fs_cache_buffer_shift = spdk_conf_section_get_intval(sp, "CacheBufferShift");
+	if (fs_cache_buffer_shift < 12) {
+        SPDK_WARNLOG("We cannot set cache size under 4KB. Set CacheBufferShift=%d now.\n", CACHE_BUFFER_SHIFT_DEFAULT);
+		fs_cache_buffer_shift = CACHE_BUFFER_SHIFT_DEFAULT;
 	}
+    g_fs_cache_buffer_shift = (uint32_t) fs_cache_buffer_shift;
 
 	g_dirty_ratio = spdk_conf_section_get_intval(sp, "DirtyRatio");
 	if (g_dirty_ratio <= 0 || g_dirty_ratio >= 100) {
@@ -494,14 +487,20 @@ fs_conf_parse(void)
 	g_fs_cache_size_in_gb = spdk_conf_section_get_intval(sp, "CacheSizeInGB");
 	if (g_fs_cache_size_in_gb <= 0) {
 		SPDK_WARNLOG("CacheSizeInGB must be > 0\n");
-        g_fs_cache_size_in_gb = 40;
+        g_fs_cache_size_in_gb = BLOBFS_DEFAULT_CACHE_SIZE_IN_GB;
 	}
 
-	g_queue_depth = spdk_conf_section_get_intval(sp, "QueueDepth");
+/*	g_queue_depth = spdk_conf_section_get_intval(sp, "QueueDepth");
 	if (g_queue_depth <= 0) {
 		SPDK_WARNLOG("QueueDepth must be > 0\n");
 		g_queue_depth = 128;
-	}
+	}*/
+
+    g_channel_heap_in_gb = spdk_conf_section_get_intval(sp, "ChannelHeapSizeInGB");
+    if (g_channel_heap_in_gb <= 0) {
+        SPDK_WARNLOG("ChannelHeapSizeInGB must be > 0\n");
+        g_channel_heap_in_gb = BLOBFS_DEFAULT_CACHE_SIZE_IN_GB;
+    }
 }
 
 static struct spdk_filesystem *
@@ -2743,6 +2742,110 @@ static TAILQ_HEAD(, spdk_fs_request) g_fetch_waiter;
 static TAILQ_HEAD(, cache_buffer) g_blank_buffer;
 static void ** dma_head;
 
+static void blobfs2_expand_reqs(struct spdk_fs_channel * channel)
+{
+    uint8_t * page;
+    uint64_t off;
+    struct spdk_fs_request * req;
+    struct blobfs2_mmap_area * a;
+
+    // should we strictly check allocated pages with locking?
+    if ((channel->nr_allocated_pages + 1) * g_page_size / 1024 / 1024 / 1024 >= g_channel_heap_in_gb) {
+        return;
+    }
+
+    page = mmap(NULL, g_page_size, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (page == MAP_FAILED) {
+        return;
+    }
+
+    a = (struct blobfs2_mmap_area *) page;
+    a->page = page;
+    a->nr_pages = 1;
+
+    if (channel->sync) {
+        pthread_spin_lock(&channel->lock);
+    }
+    ++channel->nr_allocated_pages;
+    TAILQ_INSERT_TAIL(&channel->mmap_pages, a, link);
+
+    for (off = sizeof(*a); off < g_page_size; off += sizeof(*req)) {
+        req = (struct spdk_fs_request *)(page + off);
+        TAILQ_INSERT_TAIL(&channel->reqs, req, link);
+    }
+    if (channel->sync) {
+        pthread_spin_unlock(&channel->lock);
+    }
+}
+
+static void blobfs2_expand_heap(struct spdk_fs_channel * channel, int objsize)
+{
+    uint8_t * pages;
+    uint64_t nr_pages;
+    uint64_t off;
+    struct channel_heap * h;
+    struct blobfs2_mmap_area * a;
+    int heap_index;
+
+    nr_pages = 1 + ((g_page_size - sizeof(struct blobfs2_mmap_area)) / sizeof(struct channel_heap)) * objsize / g_page_size;
+
+    // should we strictly check allocated pages with locking?
+    if ((channel->nr_allocated_pages + nr_pages) * g_page_size / 1024 / 1024 / 1024 >= g_channel_heap_in_gb) {
+        return;
+    }
+
+    // TODO: heap_index = log16(logsize & 0x1ffff) - 1
+    if (objsize == 16) {
+        heap_index = 0;
+    } else if (objsize == 256) {
+        heap_index = 1;
+    } else if (objsize == 4096) {
+        heap_index = 2;
+    } else {
+        heap_index = 3;
+    }
+
+    pages = mmap(NULL, g_page_size * nr_pages, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (pages == MAP_FAILED) {
+        return;
+    }
+
+    a = (struct blobfs2_mmap_area *) pages;
+    a->page = pages;
+    a->nr_pages = nr_pages;
+
+    if (channel->sync) {
+        pthread_spin_lock(&channel->lock);
+    }
+    channel->nr_allocated_pages += nr_pages;
+    TAILQ_INSERT_TAIL(&channel->mmap_pages, a, link);
+
+    for (off = sizeof(*a); off < g_page_size; off += sizeof(*h)) {
+        h = (struct channel_heap *)pages + off;
+        h->page = pages + g_page_size + off * objsize;
+        TAILQ_INSERT_TAIL(&channel->heaps[heap_index], h, link);
+    }
+    if (channel->sync) {
+        pthread_spin_unlock(&channel->lock);
+    }
+}
+
+static void blobfs2_release_heap(struct spdk_fs_channel * channel)
+{
+    if (channel->sync) {
+        pthread_spin_lock(&channel->lock);
+    }
+    while (!TAILQ_EMPTY(&channel->mmap_pages)) {
+        struct blobfs2_mmap_area * a = TAILQ_FIRST(&channel->mmap_pages);
+        channel->nr_allocated_pages -= a->nr_pages;
+        munmap(a->page, a->nr_pages * g_page_size);
+        TAILQ_REMOVE(&channel->mmap_pages, a, link);
+    }
+    if (channel->sync) {
+        pthread_spin_unlock(&channel->lock);
+    }
+}
+
 int blobfs2_init(void)
 {
 	int i;
@@ -2754,10 +2857,8 @@ int blobfs2_init(void)
 	TAILQ_INIT(&g_zeroref_caches);
 	TAILQ_INIT(&g_evict_waiter);
 	TAILQ_INIT(&g_fetch_waiter);
-	if (CACHE_BUFFER_SIZE < g_page_size) {
-		SPDK_WARNLOG("CacheBufferShift should be larger than page shift for this platform. This hurts Blobfs2 performance\n");
-	}
 
+    // DMA malloc is too heavy to execute during event loop. pool them at the beginning
 	dma_head = malloc(g_fs_cache_size_in_gb * sizeof(void *));
 	if (!dma_head) {
 		return -ENOMEM;
@@ -2872,10 +2973,29 @@ static struct spdk_fs_request * blobfs2_alloc_fs_request_nonblock(struct spdk_fs
 	return req;
 }
 
-static struct spdk_fs_request * blobfs2_alloc_fs_request(struct spdk_fs_channel * channel, bool need_ubuf)
+static struct spdk_fs_request * blobfs2_alloc_fs_request(struct spdk_fs_channel * channel, int ubuf_len)
 {
     struct spdk_fs_request * req;
     struct channel_heap * h = NULL;
+    int heap_index, heap_size;
+
+    // TODO: heap_index = log16(logsize & 0x1ffff) - 1
+    if (ubuf_len <= 0) {
+        heap_index = -1;
+        heap_size = 0;
+    } else if (ubuf_len <= 16) {
+        heap_index = 0;
+        heap_size = 16;
+    } else if (ubuf_len <= 256) {
+        heap_index = 1;
+        heap_size = 256;
+    } else if (ubuf_len <= 4096) {
+        heap_index = 2;
+        heap_size = 4096;
+    } else {
+        heap_index = 3;
+        heap_size = 65536;
+    }
 
     if (channel->sync) {
         pthread_spin_lock(&channel->lock);
@@ -2898,10 +3018,10 @@ static struct spdk_fs_request * blobfs2_alloc_fs_request(struct spdk_fs_channel 
         TAILQ_REMOVE(&channel->reqs, req, link);
     }
 
-    if (need_ubuf) {
-        h = TAILQ_FIRST(&channel->heaps);
+    if (heap_index >= 0) {
+        h = TAILQ_FIRST(&channel->heaps[heap_index]);
         if (h) {
-            TAILQ_REMOVE(&channel->heaps, h, link);
+            TAILQ_REMOVE(&channel->heaps[heap_index], h, link);
         }
     }
 
@@ -2910,53 +3030,70 @@ static struct spdk_fs_request * blobfs2_alloc_fs_request(struct spdk_fs_channel 
     }
 
     if (!req) {
-		req = malloc(sizeof(*req));
-		if (!req) {
-			return NULL;
-		}
+        blobfs2_expand_reqs(channel);
+        while (!req) {
+            if (channel->sync) {
+                pthread_spin_lock(&channel->lock);
+            }
+            req = TAILQ_FIRST(&channel->reqs);
+            if (req) {
+                TAILQ_REMOVE(&channel->reqs, req, link);
+            }
+            if (channel->sync) {
+                pthread_spin_unlock(&channel->lock);
+            }
+            if (!req) {
+                // reached memory limit
+                usleep(1);
+            }
+        }
     }
-    memset(req, 0, sizeof(*req));
 	req->channel = channel;
-	req->args.from_request = true;
+    req->args.from_request = true;
 
-    if (need_ubuf) {
-    	if (!h) {
-			void * page = malloc(CACHE_BUFFER_SIZE);
-			h = malloc(sizeof(struct channel_heap));
-			if (!h || !page) {
-				free(h);
-				free(page);
-				if (req) {
-					if (channel->sync) {
-						pthread_spin_lock(&channel->lock);
-					}
-					TAILQ_INSERT_TAIL(&channel->reqs, req, link);
-					if (channel->sync) {
-						pthread_spin_unlock(&channel->lock);
-					}
-				}
-				return NULL;
-			}
-			h->page = page;
-    	}
-		req->args.op.blobfs2_rw.user_buf = h;
+    if (heap_index >= 0) {
+        if (!h) {
+            blobfs2_expand_heap(channel, heap_size);
+            while (!h) {
+                if (channel->sync) {
+                    pthread_spin_lock(&channel->lock);
+                }
+                h = TAILQ_FIRST(&channel->heaps[heap_index]);
+                if (h) {
+                    TAILQ_REMOVE(&channel->heaps[heap_index], h, link);
+                }
+                if (channel->sync) {
+                    pthread_spin_unlock(&channel->lock);
+                }
+                if (!h) {
+                    // reached memory limit
+                    usleep(1);
+                }
+            }
+        }
+        req->args.op.blobfs2_rw.user_buf = h;
     }
+    req->args.op.blobfs2_rw.ubuf_heap_index = heap_index;
 	return req;
 }
 
 static void blobfs2_free_fs_request(struct spdk_fs_request * req)
 {
     struct spdk_fs_channel *channel = req->channel;
-    bool free_heap = req->args.op.blobfs2_rw.need_free_ubuf;
+    int heap_index = req->args.op.blobfs2_rw.ubuf_heap_index;
     bool from_req = req->args.from_request;
+    struct channel_heap * ubuf = req->args.op.blobfs2_rw.user_buf;
+
+    if (from_req) {
+        memset(req, 0, sizeof(*req));
+    }
 
 	if (channel->sync) {
 		pthread_spin_lock(&channel->lock);
 	}
 	// TODO: currently, we pool all the allocated reqs/heaps. this might become memory pressure
-	if (free_heap) {
-		TAILQ_INSERT_TAIL(&channel->heaps, req->args.op.blobfs2_rw.user_buf, link);
-		req->args.op.blobfs2_rw.user_buf = NULL;
+	if (heap_index >= 0) {
+		TAILQ_INSERT_TAIL(&channel->heaps[heap_index], ubuf, link);
 	}
 	if (from_req) {
 //		--channel->cur_queue_depth;
@@ -3011,7 +3148,7 @@ int blobfs2_stat(struct spdk_filesystem *fs, struct spdk_io_channel *_channel,
 	struct spdk_fs_request *req;
 	int rc;
 
-	req = blobfs2_alloc_fs_request(channel, false);
+	req = blobfs2_alloc_fs_request(channel, 0);
 	if (req == NULL) {
 		return -ENOMEM;
 	}
@@ -3102,7 +3239,7 @@ int blobfs2_truncate(struct spdk_file * file, struct spdk_io_channel * _channel,
 	struct spdk_fs_request * req;
 	int rc;
 
-	req = blobfs2_alloc_fs_request(channel, false);
+	req = blobfs2_alloc_fs_request(channel, 0);
 	if (!req) {
 		return -ENOMEM;
 	}
@@ -3320,7 +3457,7 @@ static void __blobfs2_rw_copy_buffer(void * _args)
     struct spdk_fs_cb_args * args = &req->args;
     struct spdk_file * file = args->file;
     struct cache_buffer * buffer = args->op.blobfs2_rw.buffer;
-    void * payload = args->op.blobfs2_rw.need_free_ubuf ? args->op.blobfs2_rw.user_buf->page: args->op.blobfs2_rw.user_buf;
+    void * payload = args->op.blobfs2_rw.ubuf_heap_index >= 0 ? args->op.blobfs2_rw.user_buf->page: args->op.blobfs2_rw.user_buf;
     uint64_t offset = args->op.blobfs2_rw.offset;
     uint64_t length = args->op.blobfs2_rw.length;
     uint64_t buffer_offset = offset - offset % CACHE_BUFFER_SIZE;
@@ -3696,6 +3833,7 @@ static int64_t blobfs2_rw(struct spdk_file *file, struct spdk_io_channel * _chan
 	struct spdk_fs_channel * channel;
 	struct spdk_fs_request * req;
 	uint64_t align = spdk_bs_get_io_unit_size(file->fs->bs);
+	uint64_t buffer_offset = offset - offset % CACHE_BUFFER_SIZE;
 	struct channel_heap * user_buf = NULL;
 	bool waitrc = (is_read || (oflag & (O_SYNC | O_DSYNC | O_DIRECT)));
 	int64_t rc;
@@ -3704,8 +3842,8 @@ static int64_t blobfs2_rw(struct spdk_file *file, struct spdk_io_channel * _chan
 		return 0;
 	}
 
-	if (length > CACHE_BUFFER_SIZE) {
-	    length = CACHE_BUFFER_SIZE;
+	if (offset - buffer_offset + length > CACHE_BUFFER_SIZE) {
+	    length = CACHE_BUFFER_SIZE - (offset - buffer_offset);
 	}
 
 	if ((oflag & O_DIRECT) && ((uint64_t)payload % align != 0 || offset % align != 0 || length % align != 0)) {
@@ -3717,7 +3855,7 @@ static int64_t blobfs2_rw(struct spdk_file *file, struct spdk_io_channel * _chan
 		return -EINVAL;
 	}
 
-	req = blobfs2_alloc_fs_request(channel, !waitrc);
+	req = blobfs2_alloc_fs_request(channel, waitrc ? 0: length);
 	if (!req) {
 		return -ENOMEM;
 	}
@@ -3737,7 +3875,6 @@ static int64_t blobfs2_rw(struct spdk_file *file, struct spdk_io_channel * _chan
 	req->args.op.blobfs2_rw.is_read = is_read;
 	req->args.op.blobfs2_rw.delayed = false;
 	req->args.fn.file_op = NULL;
-	req->args.op.blobfs2_rw.need_free_ubuf = !waitrc;
 	req->args.sem = waitrc ? &channel->sem: NULL;
 	req->args.cond = 0; // waitrc ? 1: 0;
 
@@ -3892,7 +4029,7 @@ int blobfs2_sync(struct spdk_file * file, struct spdk_io_channel * _channel)
     struct spdk_fs_request * req;
     int rc;
 
-    req = blobfs2_alloc_fs_request(channel, false);
+    req = blobfs2_alloc_fs_request(channel, 0);
     if (!req) {
     	return -ENOMEM;
     }
@@ -3913,7 +4050,7 @@ int blobfs2_barrier(struct spdk_file * file, struct spdk_io_channel * _channel) 
 	struct spdk_fs_request * req;
 	int rc;
 
-	req = blobfs2_alloc_fs_request(channel, false);
+	req = blobfs2_alloc_fs_request(channel, 0);
 	if (!req) {
 		return -ENOMEM;
 	}
@@ -4059,7 +4196,7 @@ int blobfs2_create_file(struct spdk_filesystem *fs, struct spdk_io_channel *_cha
 
     SPDK_DEBUGLOG(SPDK_LOG_BLOBFS, "file=%s\n", name);
 
-    req = blobfs2_alloc_fs_request(channel, false);
+    req = blobfs2_alloc_fs_request(channel, 0);
     if (req == NULL) {
         return -ENOMEM;
     }
@@ -4201,7 +4338,7 @@ int blobfs2_open(struct spdk_filesystem *fs, struct spdk_io_channel *_channel,
 
     SPDK_DEBUGLOG(SPDK_LOG_BLOBFS, "file=%s\n", name);
 
-    req = blobfs2_alloc_fs_request(channel, false);
+    req = blobfs2_alloc_fs_request(channel, 0);
     if (req == NULL) {
         return -ENOMEM;
     }
@@ -4311,7 +4448,7 @@ static void __blobfs2_close_async(struct spdk_file *file, struct spdk_fs_request
 	pthread_spin_lock(&file->lock);
 	if (file->ref_count == 0) {
 		pthread_spin_unlock(&file->lock);
-		__file_close_async_done(req, -EBADF);
+        __blobfs2_close_async_done(req, -EBADF);
 		return;
 	}
 
@@ -4345,7 +4482,7 @@ int blobfs2_close(struct spdk_file * file, struct spdk_io_channel * _channel)
 	struct spdk_fs_request * req;
 	struct spdk_fs_cb_args * args;
 
-	req = blobfs2_alloc_fs_request(channel, false);
+	req = blobfs2_alloc_fs_request(channel, 0);
 	if (req == NULL) {
 		return -ENOMEM;
 	}
@@ -4449,7 +4586,7 @@ int blobfs2_delete_file(struct spdk_filesystem *fs, struct spdk_io_channel *_cha
 	struct spdk_fs_cb_args *args;
 	int rc;
 
-	req = blobfs2_alloc_fs_request(channel, false);
+	req = blobfs2_alloc_fs_request(channel, 0);
 	if (req == NULL) {
 		return -ENOMEM;
 	}
@@ -4495,7 +4632,7 @@ int blobfs2_access(struct spdk_filesystem * fs, struct spdk_io_channel * _channe
 	struct spdk_fs_cb_args *args;
 	int rc;
 
-	req = blobfs2_alloc_fs_request(channel, false);
+	req = blobfs2_alloc_fs_request(channel, 0);
 	if (req == NULL) {
 		return -ENOMEM;
 	}
