@@ -216,6 +216,7 @@ struct spdk_fs_cb_args {
             TAILQ_ENTRY(spdk_fs_request) resize_tailq;
 			TAILQ_ENTRY(spdk_fs_request) write_tailq;
 			TAILQ_ENTRY(spdk_fs_request) evict_tailq;
+			TAILQ_ENTRY(spdk_fs_request) fetch_tailq;
             spdk_file_op_complete sync_op;
             int64_t nr_evict;
 		} blobfs2_rw;
@@ -585,6 +586,7 @@ spdk_fs_init(struct spdk_bs_dev *dev, struct spdk_blobfs_opts *opt,
 	if (opt) {
 		opts.cluster_sz = opt->cluster_sz;
 	}
+	opts.max_channel_ops = 65536;
     opts.num_md_pages = 4096;
 	spdk_bs_init(dev, &opts, init_cb, req);
 }
@@ -2737,6 +2739,7 @@ static int64_t g_nr_buffers;
 static int64_t g_nr_dirties;
 static TAILQ_HEAD(, cache_buffer) g_zeroref_caches;
 static TAILQ_HEAD(, spdk_fs_request) g_evict_waiter;
+static TAILQ_HEAD(, spdk_fs_request) g_fetch_waiter;
 static TAILQ_HEAD(, cache_buffer) g_blank_buffer;
 static void ** dma_head;
 
@@ -2750,6 +2753,7 @@ int blobfs2_init(void)
 	TAILQ_INIT(&g_caches);
 	TAILQ_INIT(&g_zeroref_caches);
 	TAILQ_INIT(&g_evict_waiter);
+	TAILQ_INIT(&g_fetch_waiter);
 	if (CACHE_BUFFER_SIZE < g_page_size) {
 		SPDK_WARNLOG("CacheBufferShift should be larger than page shift for this platform. This hurts Blobfs2 performance\n");
 	}
@@ -3310,7 +3314,7 @@ static void __blobfs2_flush_buffer_check_resize(void * _args)
 }
 
 static long t_memcpy = 0;
-static void __blobfs2_rw_copy_buffer(void * _args, int bserrno)
+static void __blobfs2_rw_copy_buffer(void * _args)
 {
     struct spdk_fs_request * req = _args;
     struct spdk_fs_cb_args * args = &req->args;
@@ -3324,11 +3328,6 @@ static void __blobfs2_rw_copy_buffer(void * _args, int bserrno)
 	long n;
 
 	clock_gettime(CLOCK_MONOTONIC, &t);
-    if (bserrno) {
-        SPDK_ERRLOG("failed to fetch on-disk data : %d\n", bserrno);
-		__blobfs2_rw_last(buffer, req, -EIO);
-        return;
-    }
 
     if (args->op.blobfs2_rw.is_read) {
 		memcpy(payload, buffer->buf + offset - buffer_offset, length);
@@ -3411,6 +3410,46 @@ static int blobfs2_evict_cache(void * _args)
 	return 0;
 }
 
+static void __blobfs2_rw_fetch_done(void * _args, int bserrno)
+{
+    struct spdk_fs_request * req = _args;
+
+    if (bserrno == -ENOMEM) {
+        // reached the hard limit of the number of reads. resubmit this request after another in-progress read.
+        TAILQ_INSERT_TAIL(&g_fetch_waiter, req, args.op.blobfs2_rw.fetch_tailq);
+        return;
+    } else if (bserrno) {
+        SPDK_ERRLOG("failed to fetch on-disk data : %d\n", bserrno);
+        __blobfs2_rw_last(req->args.op.blobfs2_rw.buffer, req, -EIO);
+        return;
+    }
+    __blobfs2_rw_copy_buffer(_args);
+
+    if (!TAILQ_EMPTY(&g_fetch_waiter)) {
+        struct spdk_fs_request * dreq = TAILQ_FIRST(&g_fetch_waiter);
+        struct spdk_fs_cb_args * dargs = &dreq->args;
+        struct spdk_file * file = dargs->file;
+        struct cache_buffer * buffer = dargs->op.blobfs2_rw.buffer;
+        uint64_t offset = dargs->op.blobfs2_rw.offset;
+        uint64_t buffer_offset = offset - offset % CACHE_BUFFER_SIZE;
+        uint64_t blob_size = __file_get_blob_size(file);
+        uint64_t start_lba, num_lba;
+        uint32_t lba_size;
+
+        TAILQ_REMOVE(&g_fetch_waiter, dreq, args.op.blobfs2_rw.fetch_tailq);
+        if (file->length < blob_size) {
+            blob_size = file->length;
+        }
+        uint64_t len = blob_size - buffer_offset;
+        if (len > CACHE_BUFFER_SIZE) {
+            len = CACHE_BUFFER_SIZE;
+        }
+        __get_page_parameters(file, buffer_offset, len, &start_lba, &lba_size, &num_lba);
+        spdk_blob_io_read(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
+                          buffer->buf + (start_lba * lba_size) - buffer_offset, start_lba, num_lba, __blobfs2_rw_fetch_done, dreq);
+    }
+}
+
 static void __blobfs2_rw_resubmit(void * _args);
 
 static void __blobfs2_rw_buffered(void * _args)
@@ -3458,7 +3497,7 @@ static void __blobfs2_rw_buffered(void * _args)
 		blobfs2_buffer_up(file, buffer);
 		// cache hit. copy and return immediately.
 		args->op.blobfs2_rw.buffer = buffer;
-		__blobfs2_rw_copy_buffer(req, 0);
+		__blobfs2_rw_copy_buffer(req);
 		return;
 	}
 
@@ -3480,7 +3519,7 @@ static void __blobfs2_rw_buffered(void * _args)
 	}
 
 	if (!args->op.blobfs2_rw.is_read && offset % CACHE_BUFFER_SIZE == 0 && length % CACHE_BUFFER_SIZE == 0) {
-		__blobfs2_rw_copy_buffer(req, 0);
+		__blobfs2_rw_copy_buffer(req);
 		return;
 	}
 	if (buffer_offset < blob_size) {
@@ -3491,10 +3530,10 @@ static void __blobfs2_rw_buffered(void * _args)
 		}
 		__get_page_parameters(file, buffer_offset, len, &start_lba, &lba_size, &num_lba);
 		spdk_blob_io_read(args->file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
-						  buffer->buf + (start_lba * lba_size) - buffer_offset, start_lba, num_lba, __blobfs2_rw_copy_buffer, req);
+						buffer->buf + (start_lba * lba_size) - buffer_offset, start_lba, num_lba, __blobfs2_rw_fetch_done, req);
 	} else {
 		// no need to fetch on-disk data before write. copy and return immediately.
-		__blobfs2_rw_copy_buffer(req, 0);
+		__blobfs2_rw_copy_buffer(req);
 	}
 }
 
