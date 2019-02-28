@@ -2800,13 +2800,13 @@ static void blobfs2_expand_heap(struct spdk_fs_channel * channel, int objsize)
 
     // TODO: heap_index = log16(logsize & 0x1ffff) - 1
     if (objsize == 16) {
-        heap_index = 0;
-    } else if (objsize == 256) {
         heap_index = 1;
-    } else if (objsize == 4096) {
+    } else if (objsize == 256) {
         heap_index = 2;
-    } else {
+    } else if (objsize == 4096) {
         heap_index = 3;
+    } else {
+        heap_index = 4;
     }
 
     pages = mmap(NULL, g_page_size * nr_pages, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -2827,7 +2827,7 @@ static void blobfs2_expand_heap(struct spdk_fs_channel * channel, int objsize)
     for (off = sizeof(*a); off + sizeof(*h) < g_page_size; off += sizeof(*h)) {
         h = (struct channel_heap *)pages + off;
         h->page = pages + g_page_size + off * objsize;
-        TAILQ_INSERT_TAIL(&channel->heaps[heap_index], h, link);
+        TAILQ_INSERT_TAIL(&channel->heaps[heap_index - 1], h, link);
     }
     if (channel->sync) {
         pthread_spin_unlock(&channel->lock);
@@ -2984,19 +2984,19 @@ static struct spdk_fs_request * blobfs2_alloc_fs_request(struct spdk_fs_channel 
 
     // TODO: heap_index = log16(logsize & 0x1ffff) - 1
     if (ubuf_len <= 0) {
-        heap_index = -1;
+        heap_index = 0;
         heap_size = 0;
     } else if (ubuf_len <= 16) {
-        heap_index = 0;
+        heap_index = 1;
         heap_size = 16;
     } else if (ubuf_len <= 256) {
-        heap_index = 1;
+        heap_index = 2;
         heap_size = 256;
     } else if (ubuf_len <= 4096) {
-        heap_index = 2;
+        heap_index = 3;
         heap_size = 4096;
     } else {
-        heap_index = 3;
+        heap_index = 4;
         heap_size = 65536;
     }
 
@@ -3021,10 +3021,10 @@ static struct spdk_fs_request * blobfs2_alloc_fs_request(struct spdk_fs_channel 
         TAILQ_REMOVE(&channel->reqs, req, link);
     }
 
-    if (heap_index >= 0) {
-        h = TAILQ_FIRST(&channel->heaps[heap_index]);
+    if (heap_index > 0) {
+        h = TAILQ_FIRST(&channel->heaps[heap_index - 1]);
         if (h) {
-            TAILQ_REMOVE(&channel->heaps[heap_index], h, link);
+            TAILQ_REMOVE(&channel->heaps[heap_index - 1], h, link);
         }
     }
 
@@ -3054,16 +3054,16 @@ static struct spdk_fs_request * blobfs2_alloc_fs_request(struct spdk_fs_channel 
 	req->channel = channel;
     req->args.from_request = true;
 
-    if (heap_index >= 0) {
+    if (heap_index > 0) {
         if (!h) {
             blobfs2_expand_heap(channel, heap_size);
             while (!h) {
                 if (channel->sync) {
                     pthread_spin_lock(&channel->lock);
                 }
-                h = TAILQ_FIRST(&channel->heaps[heap_index]);
+                h = TAILQ_FIRST(&channel->heaps[heap_index - 1]);
                 if (h) {
-                    TAILQ_REMOVE(&channel->heaps[heap_index], h, link);
+                    TAILQ_REMOVE(&channel->heaps[heap_index - 1], h, link);
                 }
                 if (channel->sync) {
                     pthread_spin_unlock(&channel->lock);
@@ -3089,15 +3089,15 @@ static void blobfs2_free_fs_request(struct spdk_fs_request * req)
 
     if (from_req) {
         memset(req, 0, sizeof(*req));
-        if (heap_index >= 0) {
+        if (heap_index > 0) {
             int heap_size = 0;
             switch(heap_index) {
-                case 0: heap_size = 16; break;
-                case 1: heap_size = 256; break;
-                case 2: heap_size = 4096; break;
+                case 1: heap_size = 16; break;
+                case 2: heap_size = 256; break;
+                case 3: heap_size = 4096; break;
                 default: heap_size = 65536;
             }
-            memset(ubuf, 0, heap_size);
+            memset(ubuf->page, 0, heap_size);
         }
     }
 
@@ -3105,8 +3105,8 @@ static void blobfs2_free_fs_request(struct spdk_fs_request * req)
 		pthread_spin_lock(&channel->lock);
 	}
 	// TODO: currently, we pool all the allocated reqs/heaps. this might become memory pressure
-	if (heap_index >= 0) {
-		TAILQ_INSERT_TAIL(&channel->heaps[heap_index], ubuf, link);
+	if (heap_index > 0) {
+		TAILQ_INSERT_TAIL(&channel->heaps[heap_index - 1], ubuf, link);
 	}
 	if (from_req) {
 //		--channel->cur_queue_depth;
@@ -3470,7 +3470,7 @@ static void __blobfs2_rw_copy_buffer(void * _args)
     struct spdk_fs_cb_args * args = &req->args;
     struct spdk_file * file = args->file;
     struct cache_buffer * buffer = args->op.blobfs2_rw.buffer;
-    void * payload = args->op.blobfs2_rw.ubuf_heap_index >= 0 ? args->op.blobfs2_rw.user_buf->page: args->op.blobfs2_rw.user_buf;
+    void * payload = args->op.blobfs2_rw.ubuf_heap_index > 0 ? args->op.blobfs2_rw.user_buf->page: args->op.blobfs2_rw.user_buf;
     uint64_t offset = args->op.blobfs2_rw.offset;
     uint64_t length = args->op.blobfs2_rw.length;
     uint64_t buffer_offset = offset - offset % CACHE_BUFFER_SIZE;
