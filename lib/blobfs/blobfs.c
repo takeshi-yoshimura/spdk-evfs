@@ -2750,7 +2750,7 @@ static void blobfs2_expand_reqs(struct spdk_fs_channel * channel)
     struct blobfs2_mmap_area * a;
 
     // should we strictly check allocated pages with locking?
-    if ((channel->nr_allocated_pages + 1) * g_page_size / 1024 / 1024 / 1024 >= g_channel_heap_in_gb) {
+    if ((int)((channel->nr_allocated_pages + 1) * g_page_size / 1024 / 1024 / 1024) >= g_channel_heap_in_gb) {
         return;
     }
 
@@ -2790,7 +2790,7 @@ static void blobfs2_expand_heap(struct spdk_fs_channel * channel, int objsize)
     nr_pages = 1 + ((g_page_size - sizeof(struct blobfs2_mmap_area)) / sizeof(struct channel_heap)) * objsize / g_page_size;
 
     // should we strictly check allocated pages with locking?
-    if ((channel->nr_allocated_pages + nr_pages) * g_page_size / 1024 / 1024 / 1024 >= g_channel_heap_in_gb) {
+    if ((int)((channel->nr_allocated_pages + nr_pages) * g_page_size / 1024 / 1024 / 1024) >= g_channel_heap_in_gb) {
         return;
     }
 
