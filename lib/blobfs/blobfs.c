@@ -2881,7 +2881,7 @@ static struct spdk_fs_request * blobfs2_alloc_fs_request(struct spdk_fs_channel 
         pthread_spin_lock(&channel->lock);
     }
 
-	while (channel->cur_queue_depth >= g_queue_depth) {
+/*	while (channel->cur_queue_depth >= g_queue_depth) {
 		if (channel->sync) {
 			pthread_spin_unlock(&channel->lock);
 		}
@@ -2891,7 +2891,7 @@ static struct spdk_fs_request * blobfs2_alloc_fs_request(struct spdk_fs_channel 
 		}
 	}
 
-	++channel->cur_queue_depth;
+	++channel->cur_queue_depth;*/
 
     req = TAILQ_FIRST(&channel->reqs);
     if (req) {
@@ -2959,7 +2959,7 @@ static void blobfs2_free_fs_request(struct spdk_fs_request * req)
 		req->args.op.blobfs2_rw.user_buf = NULL;
 	}
 	if (from_req) {
-		--channel->cur_queue_depth;
+//		--channel->cur_queue_depth;
 		TAILQ_INSERT_HEAD(&channel->reqs, req, link);
 	}
 	if (channel->sync) {
