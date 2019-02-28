@@ -53,6 +53,7 @@
 #define BLOBFS_DEFAULT_CACHE_SIZE_IN_GB (40)
 #define SPDK_BLOBFS_DEFAULT_OPTS_CLUSTER_SZ (1024 * 1024)
 
+static uint64_t g_page_size = 0;
 static int g_fs_cache_size_in_gb = BLOBFS_DEFAULT_CACHE_SIZE_IN_GB;
 static int g_channel_heap_in_gb = BLOBFS_DEFAULT_CACHE_SIZE_IN_GB;
 //static int g_queue_depth = 128;
@@ -350,18 +351,27 @@ free_fs_request(struct spdk_fs_request *req)
 	}
 }
 
+static void blobfs2_expand_reqs(struct spdk_fs_channel * channel);
 static void blobfs2_release_heap(struct spdk_fs_channel * channel);
 
 static int
 _spdk_fs_channel_create(struct spdk_filesystem *fs, struct spdk_fs_channel *channel,
 			uint32_t max_ops)
 {
+    if (g_page_size == 0) {
+        g_page_size = sysconf(_SC_PAGESIZE);
+    }
 	TAILQ_INIT(&channel->reqs);
     TAILQ_INIT(&channel->heaps[0]);
     TAILQ_INIT(&channel->heaps[1]);
     TAILQ_INIT(&channel->heaps[2]);
     TAILQ_INIT(&channel->heaps[3]);
 	sem_init(&channel->sem, 0, 0);
+
+	channel->sync = 0;
+	channel->nr_allocated_pages = 0;
+    TAILQ_INIT(&channel->mmap_pages);
+    blobfs2_expand_reqs(channel);
 
 	channel->fs = fs;
 
@@ -406,11 +416,6 @@ _spdk_fs_channel_destroy(void *io_device, void *ctx_buf)
 {
 	struct spdk_fs_channel *channel = ctx_buf;
 
-	while (!TAILQ_EMPTY(&channel->reqs)) {
-        struct spdk_fs_request * req = TAILQ_FIRST(&channel->reqs);
-        TAILQ_REMOVE(&channel->reqs, req, link);
-        free(req);
-    }
     blobfs2_release_heap(channel);
 	if (channel->bs_channel != NULL) {
 		spdk_bs_free_io_channel(channel->bs_channel);
@@ -2733,7 +2738,6 @@ cache_free_buffers(struct spdk_file *file)
 #define O_DIRECT 1
 #endif
 
-static uint64_t g_page_size;
 static int64_t g_nr_buffers;
 static int64_t g_nr_dirties;
 static TAILQ_HEAD(, cache_buffer) g_zeroref_caches;
@@ -2850,7 +2854,6 @@ int blobfs2_init(void)
 {
 	int i;
 
-	g_page_size = sysconf(_SC_PAGESIZE);
 	g_nr_buffers = 0;
 	g_nr_dirties = 0;
 	TAILQ_INIT(&g_caches);
@@ -3086,6 +3089,16 @@ static void blobfs2_free_fs_request(struct spdk_fs_request * req)
 
     if (from_req) {
         memset(req, 0, sizeof(*req));
+        if (heap_index >= 0) {
+            int heap_size = 0;
+            switch(heap_index) {
+                case 0: heap_size = 16; break;
+                case 1: heap_size = 256; break;
+                case 2: heap_size = 4096; break;
+                default heap_size = 65536;
+            }
+            memset(ubuf, 0, heap_size);
+        }
     }
 
 	if (channel->sync) {
