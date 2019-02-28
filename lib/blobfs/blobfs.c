@@ -3095,7 +3095,7 @@ static void blobfs2_free_fs_request(struct spdk_fs_request * req)
                 case 0: heap_size = 16; break;
                 case 1: heap_size = 256; break;
                 case 2: heap_size = 4096; break;
-                default heap_size = 65536;
+                default: heap_size = 65536;
             }
             memset(ubuf, 0, heap_size);
         }
