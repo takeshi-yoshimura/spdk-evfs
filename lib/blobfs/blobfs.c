@@ -3697,7 +3697,7 @@ static void __blobfs2_rw_direct_done(void * _args, int bserrno)
 	    SPDK_ERRLOG("failed to write: offset=%lu, length=%lu, bserrno=%d\n", args->op.blobfs2_rw.offset, length, bserrno);
 	}
     if (args->op.blobfs2_rw.is_read) {
-		memcpy(args->op.blobfs2_rw.user_buf->page, args->op.blobfs2_rw.buffer->buf, length);
+		memcpy(args->op.blobfs2_rw.user_buf, args->op.blobfs2_rw.buffer->buf, length);
     }
 
     TAILQ_INSERT_TAIL(&g_blank_buffer, args->op.blobfs2_rw.buffer, zeroref_tailq);
