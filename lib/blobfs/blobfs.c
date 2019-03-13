@@ -3726,7 +3726,7 @@ static void __blobfs2_write_direct_blob(void * _args)
 	args->op.blobfs2_rw.buffer = buffer;
 
 	__get_page_parameters(file, offset, length, &start_lba, &lba_size, &num_lba);
-	memcpy(buffer->buf, args->op.blobfs2_rw.user_buf->page, length);
+	memcpy(buffer->buf, args->op.blobfs2_rw.user_buf, length);
 	spdk_blob_io_write(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
 	        buffer->buf + (start_lba * lba_size) - offset, start_lba, num_lba, __blobfs2_rw_direct_done, req);
 }
