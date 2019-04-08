@@ -1559,7 +1559,6 @@ main(int argc, char **argv)
 	spdk_app_opts_init(&opts);
 	opts.name = "blobcli";
 	opts.config_file = cli_context->config_file;
-    opts.hugepage_single_segments = 1;
 //    spdk_log_set_trace_flag("all");
 //    opts.print_level = SPDK_LOG_DEBUG;
 

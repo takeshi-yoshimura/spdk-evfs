@@ -80,7 +80,7 @@ endif
 
 ifeq ($(CONFIG_PMDK),y)
 BLOCKDEV_MODULES_LIST += bdev_pmem
-BLOCKDEV_MODULES_DEPS += -lpmemblk
+BLOCKDEV_MODULES_DEPS += -lpmemblk -lpmem
 endif
 
 SOCK_MODULES_LIST = sock
