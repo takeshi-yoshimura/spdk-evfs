@@ -110,6 +110,7 @@ struct spdk_filesystem {
 	struct spdk_bs_opts	bs_opts;
 	struct spdk_bs_dev	*bdev;
 	fs_send_request_fn	send_request;
+	bool need_dma;
 
 	struct {
 		uint32_t		max_ops;
@@ -298,7 +299,7 @@ struct spdk_fs_channel {
     uint64_t nr_allocated_pages;
 //	int cur_queue_depth;
 	TAILQ_HEAD(, spdk_fs_request)	reqs;
-    TAILQ_HEAD(, channel_heap) heaps[4]; // 16B, 256B, 4KB, 64KB
+    TAILQ_HEAD(, channel_heap) heaps[4]; // 128B, 1024B, 4KB, 64KB
 	sem_t				sem;
 	struct spdk_filesystem		*fs;
 	struct spdk_io_channel		*bs_channel;
@@ -820,6 +821,11 @@ spdk_fs_load(struct spdk_bs_dev *dev, fs_send_request_fn send_request_fn,
 	bs_opts.iter_cb_fn = iter_cb;
 	bs_opts.iter_cb_arg = req;
 	spdk_bs_load(dev, &bs_opts, load_cb, req);
+}
+
+void spdk_fs_set_need_dma(struct spdk_filesystem * fs, bool need_dma)
+{
+    fs->need_dma = need_dma;
 }
 
 static void
@@ -2798,9 +2804,9 @@ static void blobfs2_expand_heap(struct spdk_fs_channel * channel, int objsize)
     }
 
     // TODO: heap_index = log16(logsize & 0x1ffff) - 1
-    if (objsize == 16) {
+    if (objsize == 128) {
         heap_index = 1;
-    } else if (objsize == 256) {
+    } else if (objsize == 1024) {
         heap_index = 2;
     } else if (objsize == 4096) {
         heap_index = 3;
@@ -2985,12 +2991,12 @@ static struct spdk_fs_request * blobfs2_alloc_fs_request(struct spdk_fs_channel 
     if (ubuf_len <= 0) {
         heap_index = 0;
         heap_size = 0;
-    } else if (ubuf_len <= 16) {
+    } else if (ubuf_len <= 128) {
         heap_index = 1;
-        heap_size = 16;
-    } else if (ubuf_len <= 256) {
+        heap_size = 128;
+    } else if (ubuf_len <= 1024) {
         heap_index = 2;
-        heap_size = 256;
+        heap_size = 1024;
     } else if (ubuf_len <= 4096) {
         heap_index = 3;
         heap_size = 4096;
@@ -3091,8 +3097,8 @@ static void blobfs2_free_fs_request(struct spdk_fs_request * req)
         if (heap_index > 0) {
             int heap_size = 0;
             switch(heap_index) {
-                case 1: heap_size = 16; break;
-                case 2: heap_size = 256; break;
+                case 1: heap_size = 128; break;
+                case 2: heap_size = 1024; break;
                 case 3: heap_size = 4096; break;
                 default: heap_size = 65536;
             }
@@ -3692,15 +3698,18 @@ static void __blobfs2_rw_direct_done(void * _args, int bserrno)
 	struct spdk_fs_request * req = _args;
 	struct spdk_fs_cb_args * args = &req->args;
 	uint64_t length = args->op.blobfs2_rw.length;
+	struct spdk_file * file = req->args.file;
 
 	if (bserrno) {
 	    SPDK_ERRLOG("failed to write: offset=%lu, length=%lu, bserrno=%d\n", args->op.blobfs2_rw.offset, length, bserrno);
 	}
-    if (args->op.blobfs2_rw.is_read) {
-		memcpy(args->op.blobfs2_rw.user_buf, args->op.blobfs2_rw.buffer->buf, length);
-    }
+	if (file->fs->need_dma) {
+		if (args->op.blobfs2_rw.is_read) {
+			memcpy(args->op.blobfs2_rw.user_buf, args->op.blobfs2_rw.buffer->buf, length);
+		}
 
-    TAILQ_INSERT_TAIL(&g_blank_buffer, args->op.blobfs2_rw.buffer, zeroref_tailq);
+		TAILQ_INSERT_TAIL(&g_blank_buffer, args->op.blobfs2_rw.buffer, zeroref_tailq);
+	}
 	__blobfs2_rw_last(NULL, (struct spdk_fs_request *) _args, bserrno);
 }
 
@@ -3716,19 +3725,25 @@ static void __blobfs2_write_direct_blob(void * _args)
 	uint32_t lba_size;
 //	uint64_t align = spdk_bs_get_io_unit_size(file->fs->bs);
 
-	// we need to alloc temporal buffer to issue DMA
-	buffer = TAILQ_FIRST(&g_blank_buffer);
-	if (!buffer) {
-		SPDK_ERRLOG("failed to alloc buffer\n");
-		__blobfs2_rw_last(NULL, req, -ENOMEM);
-		return;
-	}
-	args->op.blobfs2_rw.buffer = buffer;
+	if (file->fs->need_dma) {
+		// we need to alloc temporal buffer to issue DMA
+		buffer = TAILQ_FIRST(&g_blank_buffer);
+		if (!buffer) {
+			SPDK_ERRLOG("failed to alloc buffer\n");
+			__blobfs2_rw_last(NULL, req, -ENOMEM);
+			return;
+		}
+		args->op.blobfs2_rw.buffer = buffer;
 
-	__get_page_parameters(file, offset, length, &start_lba, &lba_size, &num_lba);
-	memcpy(buffer->buf, args->op.blobfs2_rw.user_buf, length);
-	spdk_blob_io_write(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
-	        buffer->buf + (start_lba * lba_size) - offset, start_lba, num_lba, __blobfs2_rw_direct_done, req);
+		__get_page_parameters(file, offset, length, &start_lba, &lba_size, &num_lba);
+		memcpy(buffer->buf, args->op.blobfs2_rw.user_buf, length);
+		spdk_blob_io_write(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
+						   buffer->buf + (start_lba * lba_size) - offset, start_lba, num_lba, __blobfs2_rw_direct_done, req);
+	} else {
+		__get_page_parameters(file, offset, length, &start_lba, &lba_size, &num_lba);
+		spdk_blob_io_write(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
+						   args->op.blobfs2_rw.user_buf + (start_lba * lba_size) - offset, start_lba, num_lba, __blobfs2_rw_direct_done, req);
+	}
 }
 
 static void __blobfs2_write_direct(void * _args);
@@ -3795,18 +3810,24 @@ static void __blobfs2_read_direct(void * _args)
 		args->op.blobfs2_rw.length = length;
 	}
 
-	// we need to alloc temporal buffer to issue DMA
-    buffer = TAILQ_FIRST(&g_blank_buffer);
-	if (!buffer) {
-		SPDK_ERRLOG("failed to alloc buffer\n");
-		__blobfs2_rw_last(NULL, req, -ENOMEM);
-		return;
-	}
+	if (file->fs->need_dma) {
+		// we need to alloc temporal buffer to issue DMA
+		buffer = TAILQ_FIRST(&g_blank_buffer);
+		if (!buffer) {
+			SPDK_ERRLOG("failed to alloc buffer\n");
+			__blobfs2_rw_last(NULL, req, -ENOMEM);
+			return;
+		}
 
-	__get_page_parameters(file, offset, length, &start_lba, &lba_size, &num_lba);
-	args->op.blobfs2_rw.buffer = buffer;
-	spdk_blob_io_read(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
-	        buffer->buf + (start_lba * lba_size) - offset, start_lba, num_lba, __blobfs2_rw_direct_done, req);
+		__get_page_parameters(file, offset, length, &start_lba, &lba_size, &num_lba);
+		args->op.blobfs2_rw.buffer = buffer;
+		spdk_blob_io_read(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
+						  buffer->buf + (start_lba * lba_size) - offset, start_lba, num_lba, __blobfs2_rw_direct_done, req);
+	} else {
+		__get_page_parameters(file, offset, length, &start_lba, &lba_size, &num_lba);
+		spdk_blob_io_read(file->blob, file->fs->sync_target.sync_fs_channel->bs_channel,
+						  args->op.blobfs2_rw.user_buf + (start_lba * lba_size) - offset, start_lba, num_lba, __blobfs2_rw_direct_done, req);
+	}
 }
 
 static void __blobfs2_rw_cb(void * _args)

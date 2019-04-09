@@ -167,6 +167,8 @@ void spdk_fs_load(struct spdk_bs_dev *dev, fs_send_request_fn send_request_fn,
  */
 void spdk_fs_unload(struct spdk_filesystem *fs, spdk_fs_op_complete cb_fn, void *cb_arg);
 
+void spdk_fs_set_need_dma(struct spdk_filesystem * fs, bool need_dma);
+
 /**
  * Allocate an I/O channel for asynchronous operations.
  *

@@ -208,12 +208,15 @@ start_hookfs_fn(void *arg1, void *arg2)
     }
 }
 
+static bool g_need_dma = false;
+
 static void
 init_cb(void *ctx, struct spdk_filesystem *fs, int fserrno)
 {
     struct spdk_event *event;
 
     g_fs = fs;
+    spdk_fs_set_need_dma(fs, g_need_dma);
     spdk_smp_rmb();
     g_channel = spdk_fs_alloc_io_channel_sync(g_fs);
     event = spdk_event_allocate(1, start_hookfs_fn, NULL, NULL);
@@ -221,6 +224,8 @@ init_cb(void *ctx, struct spdk_filesystem *fs, int fserrno)
 }
 
 #include <time.h>
+#include <include/spdk/bdev_module.h>
+
 static long longest = 0;
 static void * func = NULL;
 static void * arg = NULL;
@@ -267,6 +272,11 @@ hookfs_run(void *arg1, void *arg2)
         exit(1);
     }
 
+    if (strcmp(bdev->product_name, "pmemblk disk") == 0) {
+        g_need_dma = false;
+    } else {
+        g_need_dma = true;
+    }
     g_bs_dev = spdk_bdev_create_bs_dev(bdev, NULL, NULL);
 
 //  printf("Mounting BlobFS on bdev %s\n", spdk_bdev_get_name(bdev));
