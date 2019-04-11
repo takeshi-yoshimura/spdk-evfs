@@ -224,7 +224,7 @@ init_cb(void *ctx, struct spdk_filesystem *fs, int fserrno)
 }
 
 #include <time.h>
-#include <include/spdk/bdev_module.h>
+#include "spdk/bdev_module.h"
 
 static long longest = 0;
 static void * func = NULL;
